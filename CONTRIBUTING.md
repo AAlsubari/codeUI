@@ -11,7 +11,7 @@ Repository: [https://github.com/AAlsubari/codeUI](https://github.com/AAlsubari/c
 When contributing code to `codeui`, you MUST adhere to the following core engineering rules:
 
 1. **Static Analysis Only**: NEVER `exec`, `eval`, or `import` analyzed user code.
-2. **Rule 6 — Zero Source Comments**: NO inline comments (`#`) inside `codeui/` library source code files. Docstrings on public interfaces are allowed and encouraged. Clear function naming and concise logic must self-document the code.
+2. **Rule 6 — Zero Source Comments**: NO inline comments (`#`) inside `src/codeui/` library source code files. Docstrings on public interfaces are allowed and encouraged. Clear function naming and concise logic must self-document the code.
 3. **Public Interface Docstrings**: All public functions and classes must include complete docstrings with runnable `doctest` examples.
 4. **Typed Exceptions**: All error paths must raise typed exceptions derived from `codeui.errors.CodeUIError`.
 5. **Direct Disk & Override Compatibility**: Maintain dual-mode support for non-destructive `OverrideStore` shadow edits and direct disk project file writes.
@@ -39,13 +39,13 @@ Before submitting changes, ensure all unit tests, doctests, and type checks pass
 
 ```bash
 # Run pytest with coverage
-pytest --cov=codeui
+pytest --cov=src/codeui
 
 # Run doctests across module source files
-python3 -m pytest --doctest-modules codeui
+python3 -m pytest --doctest-modules src/codeui
 
 # Run type checker
-mypy --strict codeui
+mypy --strict src/codeui
 ```
 
 ---

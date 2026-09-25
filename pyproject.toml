@@ -57,15 +57,17 @@ codeui = "codeui.cli.main:main"
 [project.entry-points."codeui.plugins"]
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["codeui*"]
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "--doctest-modules"
 
 [tool.mypy]
 python_version = "3.10"
+mypy_path = "src"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
