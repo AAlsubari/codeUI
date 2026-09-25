@@ -1,1 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>codeui — Universal Code Graph & Intelligence Explorer</title>
+    <meta name="description" content="Universal code-intelligence library, interactive code graph visualizer, defect detector, and AI agent context builder.">
+    <meta property="og:title" content="codeui — Universal Code Graph & Intelligence Explorer">
+    <meta property="og:description" content="Universal code-intelligence library, interactive code graph visualizer, defect detector, and AI agent context builder.">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body data-theme="dark">
+    <header>
+        <div class="logo">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+            codeui Universal Explorer
+        </div>
+        <div class="nav-actions">
+            <!-- Quick Search Palette Trigger -->
+            <button class="secondary btn-quick-search" onclick="App.openQuickPalette()" title="Quick Find (Cmd/Ctrl + K)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                <span>Find</span>
+                <kbd class="kbd-badge">⌘K</kbd>
+            </button>
 
+            <!-- Clone Repo Input -->
+            <div style="display:flex; align-items:center; gap:6px; background:var(--bg-surface); border:1px solid var(--border-subtle); padding:2px 6px; border-radius:6px;">
+                <input type="text" id="clone-repo-input" placeholder="expressjs/express or URL" style="padding:4px 8px; font-size:0.75rem; background:var(--bg-base); border:1px solid var(--border-subtle); color:var(--text-main); border-radius:4px; width:150px;" onkeydown="if(event.key==='Enter') App.cloneRepository()">
+                <button id="btn-clone-repo" class="primary" style="padding:4px 8px; font-size:0.75rem;" onclick="App.cloneRepository()">Clone</button>
+            </div>
+
+            <!-- View Modes -->
+            <div class="btn-group">
+                <button id="btn-mode-files" class="active" onclick="App.switchGraphMode('files')">Files</button>
+                <button id="btn-mode-symbols" onclick="App.switchGraphMode('symbols')">Symbols</button>
+            </div>
+
+            <!-- Layout Mode Selector -->
+            <select id="select-layout-mode" class="select-control" onchange="App.switchLayoutMode(this.value)" title="Change Graph Layout">
+                <option value="force">Layout: Force Physics</option>
+                <option value="hierarchical">Layout: Hierarchical DAG</option>
+                <option value="radial">Layout: Radial Orbit</option>
+                <option value="clusters">Layout: Feature Clusters</option>
+            </select>
+
+            <!-- Color Palette Mode -->
+            <select id="select-color-mode" class="select-control" onchange="App.switchColorMode(this.value)">
+                <option value="layer">Color: Layer</option>
+                <option value="feature">Color: Feature</option>
+            </select>
+
+            <!-- Theme Mode Selector -->
+            <select id="select-theme" class="select-control" onchange="App.switchTheme(this.value)" title="UI Color Theme">
+                <option value="dark">Theme: Dark Slate</option>
+                <option value="cyber">Theme: Cyber Matrix</option>
+                <option value="light">Theme: Light Studio</option>
+            </select>
+
+            <!-- Interactive Path Tracer -->
+            <button id="btn-path-tracer" class="secondary" onclick="App.togglePathTracer()" title="Find shortest dependency path between 2 nodes">⚡ Tracer</button>
+
+            <!-- Defect / Unused Filter -->
+            <button id="btn-toggle-unused" class="secondary" onclick="App.toggleUnusedHighlight()">⚠️ Unused</button>
+
+            <!-- Direct Disk Write Toggle -->
+            <button id="btn-toggle-direct-disk" class="secondary active success" onclick="App.toggleDirectDiskEdit()" title="Toggle direct disk write vs in-memory session override store">💾 Disk Edit: ON</button>
+
+            <!-- Shortcuts Help -->
+            <button class="secondary" onclick="App.toggleShortcutsModal()" title="Keyboard Shortcuts (?)">⌨ ?</button>
+
+            <!-- Refresh & Export -->
+            <button class="secondary" onclick="App.loadData(true)" title="Refresh AST Analysis">🔄</button>
+            <button class="success" onclick="App.exportZip()">📦 Export Zip</button>
+        </div>
+    </header>
+    <div class="main-layout">
+        <!-- Collapsible Sidebar Left -->
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <span style="font-weight:700; font-size:0.8rem; color:var(--text-muted);">Explorer Sidebar</span>
+                <button class="secondary" onclick="Sidebar.toggleSidebar()" title="Collapse Sidebar">◀ Collapse</button>
+            </div>
+            <div class="sidebar-tabs">
+                <button class="tab-btn active" onclick="Sidebar.switchTab('files')">Files</button>
+                <button class="tab-btn" onclick="Sidebar.switchTab('features')">Features</button>
+                <button class="tab-btn" onclick="Sidebar.switchTab('defects')">Defects</button>
+                <button class="tab-btn" onclick="Sidebar.switchTab('stats')">Stats</button>
+            </div>
+            <div class="sidebar-search">
+                <input type="text" id="search-box" class="search-input" placeholder="Filter files or symbols..." oninput="App.filterGraph(this.value)">
+            </div>
+            <div class="sidebar-content" id="sidebar-tab-content"></div>
+        </div>
+
+        <!-- Central Canvas Area -->
+        <div class="canvas-container" id="canvas-container">
+            <canvas id="graph-canvas"></canvas>
+
+            <!-- Dock Buttons when Windows are Collapsed -->
+            <button class="floating-dock-btn" id="btn-dock-sidebar" style="display:none;" onclick="Sidebar.toggleSidebar()">
+                <span>📁</span> Files Explorer
+            </button>
+
+            <!-- Legend Overlay -->
+            <div class="legend">
+                <div style="font-weight: 700; margin-bottom: 2px;">Architectural Layers</div>
+                <div class="legend-item"><span class="legend-shape" style="background:#a855f7;"></span> Entry Point</div>
+                <div class="legend-item"><span class="legend-shape" style="background:#3b82f6;"></span> Frontend</div>
+                <div class="legend-item"><span class="legend-shape" style="background:#22c55e;"></span> Backend</div>
+                <div class="legend-item"><span class="legend-shape" style="background:#06b6d4;"></span> Shared</div>
+                <div class="legend-item"><span class="legend-shape" style="background:#eab308;"></span> Tests</div>
+            </div>
+
+            <!-- Physics & Simulation Controls -->
+            <div class="sim-controls">
+                <button class="secondary" id="btn-pause-sim" onclick="App.toggleSim()">Pause</button>
+                <button class="secondary" onclick="App.reheatSim()">Re-Heat</button>
+                <label style="color:var(--text-muted);">Charge:</label>
+                <input type="range" min="-600" max="-50" value="-250" oninput="window.mainCanvas.setCharge(this.value)">
+            </div>
+
+            <!-- Floating Zoom Controls -->
+            <div class="zoom-controls">
+                <button class="zoom-btn" onclick="window.mainCanvas.zoomIn()" title="Zoom In (+)">+</button>
+                <button class="zoom-btn" onclick="window.mainCanvas.zoomOut()" title="Zoom Out (-)">−</button>
+                <button class="zoom-btn" onclick="window.mainCanvas.resetView()" title="Fit / Center View (F)">⛶</button>
+            </div>
+
+            <!-- Mini-Map Overlay Component -->
+            <div id="graph-minimap-container" class="minimap-container">
+                <div class="minimap-header">
+                    <div class="minimap-title">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+                        <span>Mini-Map</span>
+                        <span id="minimap-count" class="minimap-count">0 files</span>
+                    </div>
+                    <div class="minimap-actions">
+                        <button class="minimap-btn" onclick="window.mainCanvas.fitToScreen()" title="Fit View">⛶</button>
+                        <button class="minimap-btn" onclick="window.mainCanvas.miniMap.collapse()" title="Minimize Mini-Map">_</button>
+                    </div>
+                </div>
+                <div class="minimap-canvas-wrapper">
+                    <canvas id="minimap-canvas"></canvas>
+                    <div id="minimap-tooltip" class="minimap-tooltip" style="display:none;"></div>
+                </div>
+            </div>
+
+            <!-- Mini-Map Dock Button when Collapsed -->
+            <button id="minimap-dock-btn" class="minimap-dock-btn" style="display:none;" onclick="window.mainCanvas.miniMap.expand()" title="Open Mini-Map">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+                <span>Mini-Map</span>
+                <span id="minimap-dock-count" class="minimap-count"></span>
+            </button>
+
+            <!-- Taskbar for Minimized SubGraph Floating Windows -->
+            <div id="subgraph-taskbar"></div>
+            <div id="toast-container"></div>
+        </div>
+    </div>
+
+    <!-- Modular JS Scripts -->
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/state.js"></script>
+    <script src="/static/js/minimap.js"></script>
+    <script src="/static/js/graph_canvas.js"></script>
+    <script src="/static/js/subgraph_window.js"></script>
+    <script src="/static/js/sidebar.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
