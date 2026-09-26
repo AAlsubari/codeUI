@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+#sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from codeui.core.graph import Graph
 from codeui.core.ir import Finding, Location, Severity
