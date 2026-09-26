@@ -1,4 +1,4 @@
-"""Test suite package for codeui."""
+"""Test suite package for codeui. testing"""
 import sys
 from pathlib import Path
 
