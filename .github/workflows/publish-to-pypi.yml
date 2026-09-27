@@ -50,7 +50,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.version.outputs.version }}
-          name: codeui v${{ steps.version.outputs.version }}
+          name: codeUI v${{ steps.version.outputs.version }}
           body: |
             ## codeui v${{ steps.version.outputs.version }}
             
@@ -58,7 +58,7 @@ jobs:
             
             ### Installation
             ```bash
-            pip install codeui==${{ steps.version.outputs.version }}
+            pip install codeui-python==${{ steps.version.outputs.version }}
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
