@@ -50,9 +50,9 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.version.outputs.version }}
-          name: codeUI v${{ steps.version.outputs.version }}
+          name: codeui-python v${{ steps.version.outputs.version }}
           body: |
-            ## codeui v${{ steps.version.outputs.version }}
+            ## codeui-python v${{ steps.version.outputs.version }}
             
             ${{ github.event.inputs.release_notes }}
             
