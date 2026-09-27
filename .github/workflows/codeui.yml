@@ -1,0 +1,33 @@
+name: CodeUI Graph & Defect Analysis
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install codeui-python
+        run: pip install codeui-python
+
+      - name: Generate Code Graph Artifact
+        run: codeui scan . > code_graph.json
+
+      - name: Run Static Defect Analysis (SARIF)
+        run: codeui defects . --format sarif > codeui-defects.sarif
+
+      - name: Upload Graph Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-graph
+          path: code_graph.json
