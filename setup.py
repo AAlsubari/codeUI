@@ -5,7 +5,7 @@ this_directory = Path(__file__).parent
 long_description = (this_directory / "README.md").read_text(encoding="utf-8") if (this_directory / "README.md").exists() else ""
 
 setup(
-    name="codeui",
+    name="codeui-python",
     version="0.1.0",
     author="Akram Alsubari",
     author_email="akram.alsubari87@gmail.com",
