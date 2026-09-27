@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Universal static analysis code intelligence library, defect detector, graph visualizer, and agent context builder"
 readme = "README.md"
 authors = [
-    { name = "Akram Alsubari", email = "akram.alsubari@outlook.com" }
+    { name = "Akram Alsubari", email = "akram.alsubari87@gmail.com" }
 ]
 license = { text = "MIT" }
 requires-python = ">=3.10"
