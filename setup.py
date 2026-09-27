@@ -8,7 +8,7 @@ setup(
     name="codeui",
     version="0.1.0",
     author="Akram Alsubari",
-    author_email="akramsubari@gmail.com",
+    author_email="akram.alsubari87@gmail.com",
     description="Universal static analysis code intelligence library, defect detector, graph visualizer, and agent context builder",
     long_description=long_description,
     long_description_content_type="text/markdown",
