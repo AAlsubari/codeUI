@@ -20,7 +20,20 @@ class ResolveContext:
         self._resolve_cache: Dict[Tuple[str, str, str], List[str]] = {}
         self._known_files: Optional[Set[str]] = None
         self._search_roots: List[Path] = [self.root_path]
+        self.known_extensions: Set[str] = {
+            ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go",
+            ".rs", ".java", ".kt", ".kts", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
+            ".cs", ".php", ".rb", ".swift", ".scala", ".sc", ".dart", ".json", ".yaml", ".yml"
+        }
         self._load_configs()
+
+    def set_supported_extensions(self, exts: Iterable[str]) -> None:
+        """Configure file extensions considered during import resolution.
+        Example:
+            >>> ctx = ResolveContext(Path("."))
+            >>> ctx.set_supported_extensions([".py", ".ts"])
+        """
+        self.known_extensions = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in exts}
 
     def set_known_files(self, files: Iterable[str]) -> None:
         """Register known project files to accelerate import resolution without disk checks.
@@ -133,6 +146,9 @@ class ResolveContext:
         if cache_key in self._resolve_cache:
             return self._resolve_cache[cache_key]
 
+        all_exts = sorted(list(self.known_extensions))
+        index_basenames = ["index", "__init__", "mod", "lib", "main"]
+
         resolved: List[str] = []
         current_dir = (self.root_path / Path(current_file).parent).resolve() if current_file else self.root_path
         clean_mod = import_path.replace("module::", "").replace("import:", "").strip()
@@ -145,27 +161,28 @@ class ResolveContext:
                 if target_dir.parent and target_dir.parent != target_dir:
                     target_dir = target_dir.parent
 
-            parts = [p for p in rest.split(".") if p]
+            parts = [p for p in rest.replace("\\", "/").split("/") if p]
+            if not parts and "." in rest:
+                parts = [p for p in rest.split(".") if p]
+
+            candidate_paths: List[Path] = []
             if not parts:
-                candidate_paths = [target_dir / "__init__.py", target_dir / "index.ts", target_dir / "index.js"]
+                for idx_base in index_basenames:
+                    for ext in all_exts:
+                        candidate_paths.append(target_dir / f"{idx_base}{ext}")
             else:
                 sub_str = "/".join(parts)
                 parent_sub = "/".join(parts[:-1]) if len(parts) > 1 else ""
-                candidate_paths = [
-                    target_dir / f"{sub_str}.py",
-                    target_dir / f"{sub_str}.ts",
-                    target_dir / f"{sub_str}.js",
-                    target_dir / sub_str / "__init__.py",
-                    target_dir / sub_str / "index.ts",
-                    target_dir / sub_str / "index.js",
-                ]
-                if parent_sub:
-                    candidate_paths.extend([
-                        target_dir / f"{parent_sub}.py",
-                        target_dir / f"{parent_sub}.ts",
-                        target_dir / f"{parent_sub}.js",
-                        target_dir / parent_sub / "__init__.py",
-                    ])
+                candidate_paths.append(target_dir / sub_str)
+                for ext in all_exts:
+                    candidate_paths.append(target_dir / f"{sub_str}{ext}")
+                    if parent_sub:
+                        candidate_paths.append(target_dir / f"{parent_sub}{ext}")
+                    for idx_base in index_basenames:
+                        candidate_paths.append(target_dir / sub_str / f"{idx_base}{ext}")
+                        if parent_sub:
+                            candidate_paths.append(target_dir / parent_sub / f"{idx_base}{ext}")
+
             for cp in candidate_paths:
                 if self._known_files is not None:
                     try:
@@ -185,9 +202,7 @@ class ResolveContext:
             if import_path.startswith(alias):
                 rel = import_path[len(alias):].lstrip("/")
                 base = Path(target) / rel
-                from codeui.lang.registry import LanguageRegistry
-                extensions = sorted(list(LanguageRegistry().get_supported_extensions() | {".ts", ".tsx", ".js", ".jsx", ".py"}))
-                for ext in extensions:
+                for ext in all_exts:
                     p = base.with_suffix(ext)
                     if self._known_files is not None:
                         try:
@@ -225,9 +240,6 @@ class ResolveContext:
         if not clean_mod.startswith("."):
             mod_path_str = clean_mod.replace(".", "/")
             parts = [p for p in mod_path_str.split("/") if p]
-            from codeui.lang.registry import LanguageRegistry
-            code_extensions = sorted(list(LanguageRegistry().get_supported_extensions() | {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".mjs", ".cjs"}))
-            index_filenames = ["__init__.py", "index.ts", "index.tsx", "index.js", "index.jsx", "mod.rs", "lib.rs"]
 
             if self._known_files is not None:
                 search_root_prefixes = [""] + [f"{r.name}/" for r in self._search_roots if r != self.root_path]
@@ -235,7 +247,7 @@ class ResolveContext:
                     sub_str = "/".join(parts[i:])
                     parent_sub = "/".join(parts[i:-1]) if len(parts[i:]) > 1 else ""
                     for prefix in search_root_prefixes:
-                        for ext in code_extensions:
+                        for ext in all_exts:
                             cand1 = f"{prefix}{sub_str}{ext}"
                             if cand1 in self._known_files:
                                 resolved.append(cand1)
@@ -243,14 +255,15 @@ class ResolveContext:
                                 cand2 = f"{prefix}{parent_sub}{ext}"
                                 if cand2 in self._known_files:
                                     resolved.append(cand2)
-                        for idx_name in index_filenames:
-                            cand3 = f"{prefix}{sub_str}/{idx_name}"
-                            if cand3 in self._known_files:
-                                resolved.append(cand3)
-                            if parent_sub:
-                                cand4 = f"{prefix}{parent_sub}/{idx_name}"
-                                if cand4 in self._known_files:
-                                    resolved.append(cand4)
+                        for idx_base in index_basenames:
+                            for ext in all_exts:
+                                cand3 = f"{prefix}{sub_str}/{idx_base}{ext}"
+                                if cand3 in self._known_files:
+                                    resolved.append(cand3)
+                                if parent_sub:
+                                    cand4 = f"{prefix}{parent_sub}/{idx_base}{ext}"
+                                    if cand4 in self._known_files:
+                                        resolved.append(cand4)
                     if resolved:
                         break
             else:
@@ -260,14 +273,15 @@ class ResolveContext:
                     sub_str = "/".join(sub_parts)
                     parent_sub = "/".join(sub_parts[:-1]) if len(sub_parts) > 1 else ""
                     for root in self._search_roots:
-                        for ext in code_extensions:
+                        for ext in all_exts:
                             candidate_paths.append(root / f"{sub_str}{ext}")
                             if parent_sub:
                                 candidate_paths.append(root / f"{parent_sub}{ext}")
-                        for idx_name in index_filenames:
-                            candidate_paths.append(root / sub_str / idx_name)
-                            if parent_sub:
-                                candidate_paths.append(root / parent_sub / idx_name)
+                        for idx_base in index_basenames:
+                            for ext in all_exts:
+                                candidate_paths.append(root / sub_str / f"{idx_base}{ext}")
+                                if parent_sub:
+                                    candidate_paths.append(root / parent_sub / f"{idx_base}{ext}")
 
                 for cp in candidate_paths:
                     if cp.exists() and cp.is_file():

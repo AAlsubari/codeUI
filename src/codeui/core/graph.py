@@ -88,7 +88,7 @@ def classify_file(file_path: str, entry_points: Optional[Iterable[str]] = None, 
     shared_kw = {"utils", "util", "common", "shared", "helpers", "helper", "types", "constants", "errors", "exceptions"}
     hooks_kw = {"hooks", "composables"}
     frontend_kw = {"components", "screens", "views", "pages", "features", "ui", "frontend", "styles", "widgets", "assets", "static", "public", "templates", "client", "web"}
-    backend_kw = {"server", "services", "service", "api", "backend", "domain", "data", "db", "models", "model", "controllers", "controller", "routes", "route", "handler", "handlers", "repository", "queries", "libraries", "srv", "analysis", "report", "plugins", "lang", "tracer", "agent"}
+    backend_kw = {"server", "services", "service", "api", "backend", "domain", "data", "db", "models", "model", "controllers", "controller", "routes", "route", "handler", "handlers", "repository", "queries", "libraries", "srv", "analysis", "report", "plugins", "lang", "tracer", "agent","lib"}
 
     is_hook_stem = (stem.startswith("use") and len(stem) > 3 and stem[3].isupper() and name_lower.endswith((".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte"))) or (stem.startswith("use_") and name_lower.endswith(".py") and any(p in ("hooks", "composables") for p in parts_lower))
 
@@ -293,6 +293,19 @@ class Graph:
         symbols = [self._symbols[sid] for sid in sym_ids if sid in self._symbols]
         return sorted(symbols, key=lambda s: (s.location.start_line if s.location else 0, s.id))
 
+    def has_file(self, file_id: str) -> bool:
+        """Check if file exists in the code graph.
+        Example:
+            >>> g = Graph()
+            >>> g.has_file("main.py")
+            False
+        """
+        clean = file_id.replace("\\", "/").lstrip("./")
+        for f in self._file_symbols:
+            if f.replace("\\", "/").lstrip("./") == clean or f == file_id:
+                return True
+        return False
+
     def get_all_files(self) -> List[str]:
         """Return list of all analyzed file paths sorted.
         Example:
@@ -310,6 +323,15 @@ class Graph:
             []
         """
         return sorted(self._edges, key=lambda e: (e.source_id, e.target_id, str(e.kind)))
+
+    def get_all_edges(self) -> List[Edge]:
+        """Return all graph edges sorted deterministically (alias for get_edges).
+        Example:
+            >>> g = Graph()
+            >>> g.get_all_edges()
+            []
+        """
+        return self.get_edges()
 
     def get_outgoing_edges(self, source_id: str, kind: EdgeKind | None = None) -> List[Edge]:
         """Return outgoing edges from source symbol.
@@ -334,6 +356,203 @@ class Graph:
         if kind is not None:
             edges = [e for e in edges if e.kind == kind]
         return sorted(edges, key=lambda e: (e.source_id, e.target_id, str(e.kind)))
+
+    def get_file_subgraph(self, target_id: str, include_cross: bool = True, max_hops: Optional[int] = None) -> Dict[str, Any]:
+        """Extract a sub-graph for a file or external symbol containing its symbols and related cross-file connections.
+        Example:
+            >>> g = Graph()
+            >>> loc = Location("app.py", 1, 0, 5, 0)
+            >>> g.add_symbol(Symbol("app.py::main", "main", "main", SymbolKind.FUNCTION, "python", loc, None, "def main()", Visibility.PUBLIC, (), "h1"))
+            >>> res = g.get_file_subgraph("app.py")
+            >>> res["file_id"]
+            'app.py'
+        """
+        clean_target = target_id.replace("module::", "").replace("\\", "/").strip().lstrip("./")
+        target_file: Optional[str] = None
+        for f in self._file_symbols:
+            if f.replace("\\", "/").lstrip("./") == clean_target or f == target_id:
+                target_file = f
+                break
+
+        if not target_file and target_id in self._symbols:
+            sym = self._symbols[target_id]
+            if sym.location and sym.location.file_id:
+                target_file = sym.location.file_id
+
+        if not target_file:
+            for s in self._symbols.values():
+                if s.id == target_id or s.name == clean_target or s.qualified_name == clean_target or s.id.endswith("::" + clean_target):
+                    if s.location and s.location.file_id:
+                        target_file = s.location.file_id
+                        break
+
+        if target_file and target_file in self._file_symbols:
+            raw_symbols = self.get_symbols_by_file(target_file)
+            symbols = [s for s in raw_symbols if s.kind not in (SymbolKind.FILE, SymbolKind.VARIABLE)]
+            if not symbols:
+                symbols = [s for s in raw_symbols if s.kind != SymbolKind.FILE]
+            if not symbols:
+                symbols = raw_symbols
+            sym_ids = {s.id for s in symbols}
+            cls = self.get_file_classification(target_file)
+
+            intra_edges = [
+                e for e in self._edges
+                if (e.source_id in sym_ids or e.source_id == target_file) and (e.target_id in sym_ids or e.target_id == target_file)
+            ]
+
+            related_symbols_dict: Dict[str, Dict[str, Any]] = {}
+            collected_cross_edges: Set[Tuple[str, str, str]] = set()
+            ext_edges: List[Edge] = []
+
+            if include_cross:
+                frontier: Set[str] = set(sym_ids)
+                visited_symbols: Set[str] = set(sym_ids)
+                hops = 0
+                max_traversal_hops = max_hops if max_hops is not None else 1000
+
+                file_outgoing = self.get_outgoing_edges(target_file)
+                file_incoming = self.get_incoming_edges(target_file)
+                for e in file_outgoing + file_incoming:
+                    endpoint = e.target_id if e.source_id == target_file else e.source_id
+                    if endpoint in self._file_symbols and endpoint != target_file:
+                        edge_key = (e.source_id, e.target_id, str(e.kind))
+                        if edge_key not in collected_cross_edges:
+                            collected_cross_edges.add(edge_key)
+                            ext_edges.append(e)
+                        if endpoint not in related_symbols_dict and endpoint not in sym_ids:
+                            endpoint_name = endpoint.split("/")[-1]
+                            cls_end = self.get_file_classification(endpoint)
+                            related_symbols_dict[endpoint] = {
+                                "id": endpoint,
+                                "name": endpoint_name,
+                                "qualified_name": endpoint,
+                                "kind": "file",
+                                "file_id": endpoint,
+                                "layer": str(cls_end.layer.value if hasattr(cls_end.layer, "value") else cls_end.layer) if cls_end else "shared",
+                                "feature": cls_end.feature if cls_end else "external",
+                                "is_external": True,
+                                "location": None,
+                                "signature": None,
+                            }
+
+                while frontier and hops < max_traversal_hops:
+                    next_frontier: Set[str] = set()
+                    for current_id in frontier:
+                        for e in self.get_outgoing_edges(current_id):
+                            edge_key = (e.source_id, e.target_id, str(e.kind))
+                            if e.target_id in self._symbols:
+                                other_sym = self._symbols[e.target_id]
+                                if other_sym.kind in (SymbolKind.FILE, SymbolKind.VARIABLE):
+                                    continue
+                                other_file = other_sym.location.file_id if other_sym.location else ""
+                                if other_file and other_file in self._file_symbols:
+                                    if other_file != target_file:
+                                        if edge_key not in collected_cross_edges:
+                                            collected_cross_edges.add(edge_key)
+                                            ext_edges.append(e)
+                                        if other_sym.id not in related_symbols_dict:
+                                            other_cls = self.get_file_classification(other_file)
+                                            related_symbols_dict[other_sym.id] = {
+                                                "id": other_sym.id,
+                                                "name": other_sym.name,
+                                                "qualified_name": other_sym.qualified_name,
+                                                "kind": str(other_sym.kind.value if hasattr(other_sym.kind, "value") else other_sym.kind),
+                                                "file_id": other_file,
+                                                "layer": str(other_cls.layer.value if hasattr(other_cls.layer, "value") else other_cls.layer) if other_cls else "shared",
+                                                "feature": other_cls.feature if other_cls else "external",
+                                                "is_external": True,
+                                                "location": other_sym.location.to_dict() if other_sym.location else None,
+                                                "signature": other_sym.signature,
+                                            }
+                                        if other_sym.id not in visited_symbols:
+                                            visited_symbols.add(other_sym.id)
+                                            next_frontier.add(other_sym.id)
+
+                        for e in self.get_incoming_edges(current_id):
+                            edge_key = (e.source_id, e.target_id, str(e.kind))
+                            if e.source_id in self._symbols:
+                                other_sym = self._symbols[e.source_id]
+                                if other_sym.kind in (SymbolKind.FILE, SymbolKind.VARIABLE):
+                                    continue
+                                other_file = other_sym.location.file_id if other_sym.location else ""
+                                if other_file and other_file in self._file_symbols:
+                                    if other_file != target_file:
+                                        if edge_key not in collected_cross_edges:
+                                            collected_cross_edges.add(edge_key)
+                                            ext_edges.append(e)
+                                        if other_sym.id not in related_symbols_dict:
+                                            other_cls = self.get_file_classification(other_file)
+                                            related_symbols_dict[other_sym.id] = {
+                                                "id": other_sym.id,
+                                                "name": other_sym.name,
+                                                "qualified_name": other_sym.qualified_name,
+                                                "kind": str(other_sym.kind.value if hasattr(other_sym.kind, "value") else other_sym.kind),
+                                                "file_id": other_file,
+                                                "layer": str(other_cls.layer.value if hasattr(other_cls.layer, "value") else other_cls.layer) if other_cls else "shared",
+                                                "feature": other_cls.feature if other_cls else "external",
+                                                "is_external": True,
+                                                "location": other_sym.location.to_dict() if other_sym.location else None,
+                                                "signature": other_sym.signature,
+                                            }
+                                        if other_sym.id not in visited_symbols:
+                                            visited_symbols.add(other_sym.id)
+                                            next_frontier.add(other_sym.id)
+                    frontier = next_frontier
+                    hops += 1
+
+                all_known_ids = sym_ids | set(related_symbols_dict.keys()) | {target_file}
+                for e in self._edges:
+                    edge_key = (e.source_id, e.target_id, str(e.kind))
+                    if e.source_id in all_known_ids and e.target_id in all_known_ids:
+                        if edge_key not in collected_cross_edges and (e.source_id not in sym_ids or e.target_id not in sym_ids):
+                            collected_cross_edges.add(edge_key)
+                            ext_edges.append(e)
+
+            return {
+                "file_id": target_file,
+                "classification": cls.to_dict(),
+                "symbols": [s.to_dict() for s in symbols],
+                "related_symbols": list(related_symbols_dict.values()),
+                "edges": [e.to_dict() for e in intra_edges + ext_edges],
+            }
+
+        ext_id = target_id
+        sym_name = ext_id.split("::")[-1].split(".")[-1]
+        incoming = [e for e in self._edges if e.target_id == ext_id or e.target_id.endswith("." + sym_name)]
+        outgoing = [e for e in self._edges if e.source_id == ext_id or e.source_id.endswith("." + sym_name)]
+        ext_edges = incoming + outgoing
+        related_symbols = {}
+        for e in ext_edges:
+            endpoint = e.source_id if e.target_id == ext_id or e.target_id.endswith("." + sym_name) else e.target_id
+            if endpoint in self._symbols:
+                s = self._symbols[endpoint]
+                related_symbols[endpoint] = {
+                    "id": s.id,
+                    "name": s.name,
+                    "qualified_name": s.qualified_name,
+                    "kind": str(s.kind.value if hasattr(s.kind, "value") else s.kind),
+                    "file_id": s.location.file_id if s.location else "",
+                    "location": s.location.to_dict() if s.location else None,
+                    "signature": s.signature,
+                    "is_external": False,
+                }
+        is_class = bool(sym_name and sym_name[0].isupper())
+        return {
+            "file_id": ext_id,
+            "classification": {"layer": "shared", "feature": "external", "module": "external"},
+            "is_external": True,
+            "symbols": [{
+                "id": ext_id,
+                "name": sym_name,
+                "qualified_name": ext_id,
+                "kind": "class" if is_class else "function",
+                "signature": f"{sym_name}(...)",
+                "is_external": True,
+            }],
+            "related_symbols": list(related_symbols.values()),
+            "edges": [e.to_dict() for e in ext_edges],
+        }
 
     def get_subgraph(self, symbol_id: str, depth: int | None = None) -> Tuple[List[Symbol], List[Edge]]:
         """Extract a sub-graph surrounding a target symbol up to specified depth or all reachable nodes if depth is None.
@@ -398,14 +617,25 @@ class Graph:
         for file_id in self.get_all_files():
             classification = self.get_file_classification(file_id)
             syms = self.get_symbols_by_file(file_id)
+            detected_symbols = [s for s in syms if s.kind not in (SymbolKind.FILE, SymbolKind.VARIABLE)]
+            clean_path = file_id.replace("\\", "/").lstrip("./")
+            parts = [p for p in clean_path.split("/") if p]
+            folder = "/".join(parts[:-1]) if len(parts) > 1 else ""
+            main_folder = parts[0] if len(parts) > 1 else "root"
+            subfolder = parts[-2] if len(parts) > 2 else (parts[0] if len(parts) > 1 else "root")
             result[file_id] = {
                 "path": file_id,
                 "layer": str(classification.layer),
                 "feature": classification.feature,
                 "module": classification.module,
-                "symbol_count": len(syms),
-                "symbols_count": len(syms),
+                "folder": folder,
+                "main_folder": main_folder,
+                "subfolder": subfolder,
+                "symbol_count": len(detected_symbols),
+                "symbols_count": len(detected_symbols),
+                "total_symbols_count": len(syms),
                 "symbol_ids": [s.id for s in syms],
+                "detected_symbol_ids": [s.id for s in detected_symbols],
             }
         return result
 

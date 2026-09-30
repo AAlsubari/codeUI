@@ -115,6 +115,37 @@ class AnalysisCache:
             result.append(sym)
         return result
 
+    def clear(self) -> None:
+        """Clear all entries from the cache database.
+        Example:
+            >>> cache = AnalysisCache(Path(".codeui/test_cache.db"))
+            >>> cache.clear()
+            >>> cache.close()
+        """
+        with self.conn:
+            self.conn.execute("DELETE FROM file_cache")
+
+    def prune_stale(self, existing_file_paths: Any) -> int:
+        """Remove cached entries for files that no longer exist on disk.
+        Example:
+            >>> cache = AnalysisCache(Path(".codeui/test_cache.db"))
+            >>> cache.prune_stale(["a.py"])
+            0
+            >>> cache.close()
+        """
+        valid_set = set(existing_file_paths)
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT file_path FROM file_cache")
+        cached_paths = [row[0] for row in cursor.fetchall()]
+        stale_paths = [p for p in cached_paths if p not in valid_set]
+        if stale_paths:
+            with self.conn:
+                self.conn.executemany(
+                    "DELETE FROM file_cache WHERE file_path = ?",
+                    [(p,) for p in stale_paths],
+                )
+        return len(stale_paths)
+
     def close(self) -> None:
         """Close SQLite database connection.
         Example:
@@ -133,3 +164,26 @@ def compute_content_hash(content: str) -> str:
         64
     """
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+def remove_stale_cache(cache_path: Path) -> bool:
+    """Dynamically remove stale cache file or directory.
+    Example:
+        >>> p = Path(".codeui/stale_test.db")
+        >>> remove_stale_cache(p)
+        False
+    """
+    path = Path(cache_path)
+    if path.is_file():
+        try:
+            path.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
+    if path.is_dir():
+        import shutil
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+            return True
+        except OSError:
+            return False
+    return False

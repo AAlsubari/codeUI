@@ -164,6 +164,7 @@ class OverrideStore:
         """
         self._overrides.clear()
         self._file_contents.clear()
+        self._original_file_contents.clear()
 
     def list(self) -> Iterable[Override]:
         """List all current overrides in deterministic order.
