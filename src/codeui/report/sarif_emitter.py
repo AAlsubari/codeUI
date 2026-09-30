@@ -1,6 +1,7 @@
 """SARIF 2.1.0 format report emitter."""
 import json
 from typing import Any, Dict
+import codeui
 from codeui.core.graph import Graph
 
 class SARIFEmitter:
@@ -46,7 +47,7 @@ class SARIFEmitter:
                 "tool": {
                     "driver": {
                         "name": "codeui",
-                        "version": "0.1.0",
+                        "version": codeui.__version__,
                         "informationUri": "https://codeui.dev",
                     }
                 },
