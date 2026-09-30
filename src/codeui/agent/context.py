@@ -110,7 +110,9 @@ class ContextBuilder:
 
         relevant_findings = [
             f.to_dict() for f in self.graph.get_findings()
-            if f.symbol_id in {s.id for s in syms} or f.location.file_id == target_sym.location.file_id
+            if (f.symbol_id and f.symbol_id in {s.id for s in syms}) or (
+                f.location and target_sym.location and f.location.file_id == target_sym.location.file_id
+            )
         ]
 
         manifest = {
@@ -147,7 +149,7 @@ class ContextBuilder:
                 bodies[s.id] = f"{cm} {file_id}:{s.location.start_line if s.location else 1}\n{s.signature or s.name}"
         relevant_findings = [
             f.to_dict() for f in self.graph.get_findings()
-            if f.location.file_id == file_id
+            if f.location and f.location.file_id == file_id
         ]
         return ContextBundle(
             symbol_bodies=bodies,
@@ -189,6 +191,18 @@ class ContextBuilder:
             manifest={"query": task.query, "symbols": task.target_symbols, "files": task.target_files},
         )
 
+    def build_context(self, task: TaskSpec, depth: int = 1) -> ContextBundle:
+        """Alias for for_task to build context bundle.
+        Example:
+            >>> g = Graph()
+            >>> builder = ContextBuilder(g)
+            >>> spec = TaskSpec("Fix issue")
+            >>> bundle = builder.build_context(spec)
+            >>> "query" in bundle.manifest
+            True
+        """
+        return self.for_task(task, depth=depth)
+
     def for_defect(self, finding_id: str) -> ContextBundle:
         """Build context bundle targeting a specific defect finding.
         Example:
@@ -204,4 +218,6 @@ class ContextBuilder:
         f = matching[0]
         if f.symbol_id:
             return self.for_symbol(f.symbol_id, depth=1)
-        return self.for_file(f.location.file_id, depth=1)
+        if f.location and f.location.file_id:
+            return self.for_file(f.location.file_id, depth=1)
+        return ContextBundle({}, {}, [], [], {"finding_id": finding_id, "status": "no_location"})
