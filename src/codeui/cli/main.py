@@ -27,6 +27,7 @@ def scan_project(
     project_path: Union[str, Path],
     entry_points: Optional[Sequence[str]] = None,
     layer_rules: Optional[Dict[str, Any]] = None,
+    clean_cache: bool = False,
 ) -> Graph:
     """Scan a project directory or remote Git repository and build the universal graph.
     Example:
@@ -46,9 +47,12 @@ def scan_project(
         graph = Graph()
         registry = LanguageRegistry()
         ctx = ResolveContext(resolved_project_path)
+        ctx.set_supported_extensions(registry.get_all_extensions())
         cache_db_path = resolved_project_path / ".codeui" / "cache.db"
         try:
             cache = AnalysisCache(cache_db_path)
+            if clean_cache:
+                cache.clear()
         except Exception:
             cache = None
 
@@ -95,6 +99,13 @@ def scan_project(
                 if ext not in valid_code_exts and p.name.lower() not in ("dockerfile", "makefile"):
                     continue
                 all_files.append(p)
+
+        if cache:
+            valid_rel_paths = {
+                str(p.relative_to(resolved_project_path)).replace("\\", "/")
+                for p in all_files
+            }
+            cache.prune_stale(valid_rel_paths)
 
         parsed_files: Set[str] = set()
         raw_edges: List[Edge] = []
@@ -196,6 +207,56 @@ def scan_project(
         if temp_clone_obj:
             temp_clone_obj.cleanup()
 
+def export_pages(
+    project_path: Union[str, Path] = ".",
+    out_dir: Union[str, Path] = "dist",
+    entry_points: Optional[Sequence[str]] = None,
+    clean_cache: bool = False,
+) -> Path:
+    """Export static code graph and report artifacts for standalone browser preview.
+    Example:
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as td:
+        ...     out = export_pages(Path("."), Path(td) / "dist")
+        ...     out.exists()
+        True
+    """
+    resolved_proj = Path(project_path).resolve()
+    resolved_out = Path(out_dir).resolve()
+    resolved_out.mkdir(parents=True, exist_ok=True)
+
+    g = scan_project(resolved_proj, entry_points=entry_points, clean_cache=clean_cache)
+
+    (resolved_out / "graph.json").write_text(JSONEmitter().emit(g), encoding="utf-8")
+
+    ctx = AnalysisContext(resolved_proj)
+    findings = [f.to_dict() for f in AnalysisRunner().run_all(g, ctx)]
+    (resolved_out / "defects.json").write_text(
+        json.dumps({"findings": findings, "count": len(findings)}, indent=2),
+        encoding="utf-8",
+    )
+
+    static_src = Path(__file__).resolve().parent.parent / "server" / "static"
+    if static_src.exists():
+        static_out = resolved_out / "static"
+        static_out.mkdir(parents=True, exist_ok=True)
+        for item in static_src.rglob("*"):
+            if item.is_file() and item.name != "index.html":
+                rel = item.relative_to(static_src)
+                dest = static_out / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(item.read_bytes())
+
+        index_src = static_src / "index.html"
+        if index_src.exists():
+            html_text = index_src.read_text(encoding="utf-8")
+            html_text = html_text.replace('href="/static/', 'href="static/')
+            html_text = html_text.replace('src="/static/', 'src="static/')
+            (resolved_out / "index.html").write_text(html_text, encoding="utf-8")
+
+    (resolved_out / ".nojekyll").touch(exist_ok=True)
+    return resolved_out
+
 def main(args: Optional[List[str]] = None) -> int:
     """Main CLI entrypoint.
     Example:
@@ -209,16 +270,25 @@ def main(args: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="codeui", description="Universal code-intelligence engine", parents=[parent_parser])
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("init", parents=[parent_parser], help="Initialize .codeui configuration")
+    init_p = subparsers.add_parser("init", parents=[parent_parser], help="Initialize .codeui workspace directory")
+    init_p.add_argument("project", nargs="?", default=".", help="Project path")
 
     scan_p = subparsers.add_parser("scan", parents=[parent_parser], help="Scan project and build code graph")
     scan_p.add_argument("project", nargs="?", default=".", help="Project path")
     scan_p.add_argument("--entry", action="append", help="Explicit application entry point(s)")
     scan_p.add_argument("--out", default=".codeui", help="Output cache directory")
+    scan_p.add_argument("--clean-cache", action="store_true", help="Clear stale cache before scanning")
+
+    pages_p = subparsers.add_parser("pages", parents=[parent_parser], help="Export static interactive graph and report artifacts")
+    pages_p.add_argument("project", nargs="?", default=".", help="Project path")
+    pages_p.add_argument("--out", default="dist", help="Output directory for static artifacts (default: dist)")
+    pages_p.add_argument("--entry", action="append", help="Explicit application entry point(s)")
+    pages_p.add_argument("--clean-cache", action="store_true", help="Clear stale cache before exporting")
 
     serve_p = subparsers.add_parser("serve", parents=[parent_parser], help="Start localhost web UI server")
     serve_p.add_argument("project", nargs="?", default=".", help="Project path")
     serve_p.add_argument("--entry", action="append", help="Explicit application entry point(s)")
+    serve_p.add_argument("--host", default="127.0.0.1", help="Host interface to bind to (e.g. 127.0.0.1 or 0.0.0.0)")
     serve_p.add_argument("--port", type=int, default=3000, help="Port number")
 
     trace_p = subparsers.add_parser("trace", parents=[parent_parser], help="Trace symbol logic")
@@ -266,15 +336,16 @@ def main(args: Optional[List[str]] = None) -> int:
     parsed = parser.parse_args(args)
 
     if parsed.command == "init":
-        Path(".codeui").mkdir(exist_ok=True)
+        p = Path(parsed.project).resolve()
+        (p / ".codeui").mkdir(parents=True, exist_ok=True)
         if parsed.json:
-            print(json.dumps({"status": "initialized", "dir": ".codeui"}))
+            print(json.dumps({"status": "initialized", "dir": str(p / ".codeui")}))
         else:
-            print("Initialized .codeui workspace directory")
+            print(f"Initialized .codeui workspace directory in {p}")
         return 0
     elif parsed.command == "scan":
         p = Path(parsed.project).resolve()
-        g = scan_project(p, entry_points=parsed.entry)
+        g = scan_project(p, entry_points=parsed.entry, clean_cache=parsed.clean_cache)
         out_dir = Path(parsed.out)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "graph.json").write_text(JSONEmitter().emit(g), encoding="utf-8")
@@ -283,12 +354,35 @@ def main(args: Optional[List[str]] = None) -> int:
         else:
             print(f"Scanned {len(g.get_all_files())} files, {len(g.get_all_symbols())} symbols, {len(g.get_findings())} defects.")
         return 0
+    elif parsed.command == "pages":
+        out_path = export_pages(
+            project_path=parsed.project,
+            out_dir=parsed.out,
+            entry_points=parsed.entry,
+            clean_cache=parsed.clean_cache,
+        )
+        if parsed.json:
+            print(json.dumps({"status": "exported", "out_dir": str(out_path)}))
+        else:
+            print(f"Exported static graph and report artifacts to '{out_path}'.")
+        return 0
     elif parsed.command == "serve":
         p = Path(parsed.project).resolve()
         g = scan_project(p, entry_points=parsed.entry)
         store = OverrideStore()
-        server = create_server(g, store, p, port=parsed.port, rescan_fn=scan_project, entry_points=parsed.entry)
-        print(f"codeui UI server running on http://127.0.0.1:{parsed.port}")
+        try:
+            server = create_server(g, store, p, host=parsed.host, port=parsed.port, rescan_fn=scan_project, entry_points=parsed.entry)
+        except OSError as e:
+            if "already in use" in str(e).lower() or getattr(e, "errno", 0) == 98:
+                try:
+                    import subprocess
+                    subprocess.run(["fuser", "-k", f"{parsed.port}/tcp"], capture_output=True)
+                except Exception:
+                    pass
+                server = create_server(g, store, p, host=parsed.host, port=parsed.port, rescan_fn=scan_project, entry_points=parsed.entry)
+            else:
+                raise
+        print(f"codeui UI server running on http://{parsed.host}:{parsed.port}")
         try:
             server.serve_forever()
         except KeyboardInterrupt:
