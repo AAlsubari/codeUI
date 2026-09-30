@@ -96,3 +96,13 @@ class ContributionError(CodeUIError):
         'Failed to push changes'
     """
     pass
+
+class ExportError(CodeUIError):
+    """Raised when exporting project graph or pages fails.
+    Example:
+        >>> err = ExportError("Output directory is not writable")
+        >>> str(err)
+        'Output directory is not writable'
+    """
+    pass
+

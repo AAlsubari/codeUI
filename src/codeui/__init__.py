@@ -4,7 +4,7 @@ from codeui.core.graph import Graph
 from codeui.core.override import Override, OverrideKind, OverrideStore
 from codeui.core.repo import get_library_repo_url
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "Location",
