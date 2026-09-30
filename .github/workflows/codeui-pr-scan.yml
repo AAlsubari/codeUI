@@ -1,0 +1,92 @@
+name: codeui Static Analysis & Defect Check
+
+on:
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scan:
+    name: Code Architecture & Defect Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install codeui-python
+        run: |
+          pip install --upgrade codeui-python || pip install git+https://github.com/AAlsubari/codeUI.git || pip install .
+
+      - name: Run codeui Scan and Defect Analysis
+        run: |
+          mkdir -p .codeui-reports
+          python -m codeui.cli.main scan . --out .codeui-reports
+          python -m codeui.cli.main defects . --format json > .codeui-reports/defects.json
+
+      - name: Summarize Findings
+        run: |
+          python - << 'EOF'
+          import json, os
+          from pathlib import Path
+
+          defects_path = Path(".codeui-reports/defects.json")
+          graph_path = Path(".codeui-reports/graph.json")
+
+          findings = []
+          if defects_path.exists():
+              try:
+                  data = json.loads(defects_path.read_text(encoding="utf-8"))
+                  findings = data.get("findings", [])
+              except Exception:
+                  pass
+
+          files_count = 0
+          symbols_count = 0
+          if graph_path.exists():
+              try:
+                  g = json.loads(graph_path.read_text(encoding="utf-8"))
+                  files_count = len(g.get("files", []))
+                  symbols_count = len(g.get("symbols", []))
+              except Exception:
+                  pass
+
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_file:
+              with open(summary_file, "a", encoding="utf-8") as f:
+                  f.write("### 🔍 codeui Architecture & Defect Report\n\n")
+                  f.write(f"- **Files Analyzed**: {files_count}\n")
+                  f.write(f"- **Symbols Extracted**: {symbols_count}\n")
+                  f.write(f"- **Defects Detected**: {len(findings)}\n\n")
+
+                  if findings:
+                      f.write("| Severity | Category | File | Description |\n")
+                      f.write("| :--- | :--- | :--- | :--- |\n")
+                      for finding in findings[:20]:
+                          sev = finding.get("severity", "warning").upper()
+                          cat = finding.get("category", "code_smell")
+                          loc = finding.get("location", {})
+                          file_id = loc.get("file_id", "unknown")
+                          line = loc.get("start_line", "")
+                          pos = f"{file_id}:{line}" if line else file_id
+                          msg = finding.get("description", finding.get("message", ""))
+                          f.write(f"| {sev} | `{cat}` | `{pos}` | {msg} |\n")
+                      if len(findings) > 20:
+                          f.write(f"\n*...and {len(findings) - 20} more defects (see artifacts).*\n")
+                  else:
+                      f.write("🎉 **Zero architectural defects found! Clean code architecture.**\n")
+          EOF
+
+      - name: Upload codeui Analysis Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeui-analysis-report
+          path: .codeui-reports/
