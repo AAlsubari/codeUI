@@ -7,7 +7,7 @@ This guide covers getting started with `codeui` via the Command Line Interface (
 ## Installation
 
 ```bash
-pip install codeui
+pip install codeui-python
 ```
 
 ---
