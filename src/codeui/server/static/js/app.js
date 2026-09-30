@@ -3,33 +3,60 @@
  */
 class App {
     static async init() {
+        if (window.ThemeManager) {
+            window.ThemeManager.init();
+        }
+        if (window.Sidebar) {
+            window.Sidebar.init();
+        }
         window.mainCanvas = new GraphCanvas("graph-canvas", true);
         this.setupKeyboardShortcuts();
         this.setupGlobalClickListener();
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const repoParam = urlParams.get("repo") || urlParams.get("repository");
+        if (repoParam) {
+            const input = document.getElementById("clone-repo-input");
+            if (input) input.value = repoParam;
+            await this.cloneRepository(repoParam);
+            return;
+        }
+
         await this.loadData();
+    }
+
+    static showLoading(isLoading, text = "Processing...") {
+        const overlay = document.getElementById("canvas-loading-overlay");
+        const txt = document.getElementById("loading-overlay-text");
+        if (overlay) {
+            overlay.style.display = isLoading ? "flex" : "none";
+            if (txt && text) txt.textContent = text;
+        }
     }
 
     static async loadData(forceRefresh = false) {
         try {
-            this.showToast("Loading universal code graph...", "info");
+            this.showLoading(true, "Loading universal code graph...");
             const graphData = await CodeUIAPI.getGraph(forceRefresh);
             appState.rawGraph = graphData;
 
             const defectsRes = await CodeUIAPI.getDefects();
             appState.defectsData = defectsRes.findings || [];
 
+            this.initSymbolFilters();
             this.applyGraphFilter();
             Sidebar.renderCurrentTab();
-            this.showToast("Code graph loaded successfully", "success");
         } catch (e) {
             this.showToast(`Failed to load graph: ${e.message}`, "error");
+        } finally {
+            this.showLoading(false);
         }
     }
 
-    static async cloneRepository() {
+    static async cloneRepository(repoOverride = null) {
         const input = document.getElementById("clone-repo-input");
         const btn = document.getElementById("btn-clone-repo");
-        const repo = (input?.value || "").trim();
+        const repo = (repoOverride || input?.value || "").trim();
         if (!repo) {
             this.showToast("Please enter a GitHub repository name (e.g. expressjs/express) or Git URL", "error");
             return;
@@ -37,21 +64,31 @@ class App {
 
         if (btn) {
             btn.disabled = true;
-            btn.textContent = "Cloning...";
+            btn.textContent = "Loading...";
         }
 
-        this.showToast(`Cloning repository ${repo} via Git...`, "info");
+        this.showToast(`Loading repository ${repo}...`, "info");
+        this.showLoading(true, `Loading repository ${repo}...`);
         try {
             const res = await CodeUIAPI.cloneRepo(repo);
-            this.showToast(`Successfully cloned and scanned ${repo} (${res.files_count} files)`, "success");
-            if (input) input.value = "";
-            await this.loadData(false);
+            if (res.graph) {
+                appState.rawGraph = res.graph;
+                appState.defectsData = [];
+                this.initSymbolFilters();
+                this.applyGraphFilter();
+                Sidebar.renderCurrentTab();
+            } else {
+                await this.loadData(false);
+            }
+            this.showToast(`Successfully loaded ${repo} (${res.files_count} files)`, "success");
+            if (input && !repoOverride) input.value = "";
         } catch (e) {
-            this.showToast(`Clone failed: ${e.message}`, "error");
+            this.showToast(`Failed to load repository: ${e.message}`, "error");
         } finally {
+            this.showLoading(false);
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = "Clone Repo";
+                btn.textContent = "Clone";
             }
         }
     }
@@ -60,7 +97,119 @@ class App {
         appState.graphMode = mode;
         document.getElementById("btn-mode-files")?.classList.toggle("active", mode === "files");
         document.getElementById("btn-mode-symbols")?.classList.toggle("active", mode === "symbols");
+        this.renderSymbolFilterPopover();
         this.applyGraphFilter();
+    }
+
+    static getDiscoveredSymbolKinds() {
+        if (!appState.rawGraph || !Array.isArray(appState.rawGraph.symbols)) {
+            return [];
+        }
+        const counts = new Map();
+        for (const s of appState.rawGraph.symbols) {
+            if (!s || s.kind === "file") continue;
+            const k = String(s.kind || "other").toLowerCase();
+            counts.set(k, (counts.get(k) || 0) + 1);
+        }
+        return Array.from(counts.entries())
+            .map(([kind, count]) => ({ kind, count }))
+            .sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind));
+    }
+
+    static initSymbolFilters() {
+        if (!appState.symbolKindFilters) {
+            appState.symbolKindFilters = {};
+        }
+        const discovered = this.getDiscoveredSymbolKinds();
+        discovered.forEach(({ kind }) => {
+            if (appState.symbolKindFilters[kind] === undefined) {
+                appState.symbolKindFilters[kind] = (kind !== "variable" && kind !== "var");
+            }
+        });
+        this.renderSymbolFilterPopover();
+    }
+
+    static renderSymbolFilterPopover() {
+        const container = document.getElementById("symbol-filter-items-container");
+        if (!container) return;
+
+        const discovered = this.getDiscoveredSymbolKinds();
+        if (discovered.length === 0) {
+            container.innerHTML = `<div style="font-size:0.72rem; color:var(--text-dim); text-align:center; padding:8px;">No symbol categories discovered</div>`;
+            return;
+        }
+
+        const formatLabel = (k) => {
+            const pretty = k.replace(/_/g, " ");
+            return pretty.charAt(0).toUpperCase() + pretty.slice(1);
+        };
+
+        container.innerHTML = discovered.map(({ kind, count }) => {
+            const isChecked = appState.symbolKindFilters?.[kind] !== false;
+            const safeKind = kind.replace(/[^a-zA-Z0-9_-]/g, "");
+            return `
+                <div class="symbol-filter-item" onclick="App.toggleSymbolFilter('${safeKind}')">
+                    <label onclick="event.stopPropagation()">
+                        <input type="checkbox" id="filter-dyn-${safeKind}" ${isChecked ? "checked" : ""} onchange="App.toggleSymbolFilter('${safeKind}')">
+                        <span class="badge ${safeKind}" style="font-size:0.65rem; padding:1px 5px;">${formatLabel(kind)}</span>
+                    </label>
+                    <span class="symbol-filter-count">${count}</span>
+                </div>
+            `;
+        }).join("");
+
+        const filterBtn = document.getElementById("btn-toggle-symbol-filter-popover");
+        if (filterBtn) {
+            const hasDisabled = discovered.some(({ kind }) => appState.symbolKindFilters?.[kind] === false);
+            filterBtn.classList.toggle("active", hasDisabled);
+        }
+    }
+
+    static toggleSymbolFilter(kind) {
+        if (!appState.symbolKindFilters) {
+            appState.symbolKindFilters = {};
+        }
+        const current = appState.symbolKindFilters[kind] !== false;
+        appState.symbolKindFilters[kind] = !current;
+        this.renderSymbolFilterPopover();
+        this.applyGraphFilter();
+        if (window.mainCanvas) {
+            window.mainCanvas.alpha = Math.max(window.mainCanvas.alpha || 0, 0.65);
+        }
+    }
+
+    static setAllSymbolFilters(enableAll) {
+        if (!appState.symbolKindFilters) {
+            appState.symbolKindFilters = {};
+        }
+        const discovered = this.getDiscoveredSymbolKinds();
+        discovered.forEach(({ kind }) => {
+            appState.symbolKindFilters[kind] = !!enableAll;
+        });
+        this.renderSymbolFilterPopover();
+        this.applyGraphFilter();
+        if (window.mainCanvas) {
+            window.mainCanvas.alpha = Math.max(window.mainCanvas.alpha || 0, 0.65);
+        }
+    }
+
+    static toggleSymbolFilterPopover() {
+        const popover = document.getElementById("symbol-filter-popover");
+        if (!popover) return;
+        const isHidden = popover.style.display === "none" || !popover.style.display;
+        if (isHidden) {
+            this.renderSymbolFilterPopover();
+            popover.style.display = "block";
+        } else {
+            popover.style.display = "none";
+        }
+    }
+
+    static closeSymbolFilterPopover() {
+        const popover = document.getElementById("symbol-filter-popover");
+        if (popover) {
+            popover.style.display = "none";
+        }
     }
 
     static switchColorMode(mode) {
@@ -74,16 +223,19 @@ class App {
         const select = document.getElementById("select-layout-mode");
         if (select) select.value = mode;
         window.mainCanvas?.setLayout(mode);
-        this.showToast(`Switched layout to ${mode.toUpperCase()}`, "info");
     }
 
     static switchTheme(theme) {
-        appState.theme = theme;
-        document.body.setAttribute("data-theme", theme);
-        const select = document.getElementById("select-theme");
-        if (select) select.value = theme;
-        window.mainCanvas?.render();
-        if (window.mainCanvas?.miniMap) window.mainCanvas.miniMap.update();
+        if (window.ThemeManager) {
+            window.ThemeManager.applyTheme(theme);
+        } else {
+            appState.theme = theme;
+            document.body.setAttribute("data-theme", theme);
+            const select = document.getElementById("select-theme");
+            if (select) select.value = theme;
+            window.mainCanvas?.render();
+            if (window.mainCanvas?.miniMap) window.mainCanvas.miniMap.update();
+        }
     }
 
     static toggleUnusedHighlight() {
@@ -119,6 +271,36 @@ class App {
             ? "Direct disk edit enabled: modifications will write directly to project files on disk"
             : "In-memory override mode enabled: modifications are saved non-destructively in session store";
         this.showToast(msg, appState.directDiskWrite ? "warning" : "info");
+    }
+
+    static showApiDriftPanel() {
+        if (Sidebar.collapsed) {
+            Sidebar.toggleSidebar();
+        }
+        Sidebar.switchTab("defects");
+        Sidebar.setDefectSubFilter("api_drift");
+        const count = (appState.defectsData || []).filter(d => d.rule_id === "api_drift").length;
+        if (count > 0) {
+            this.showToast(`Detected ${count} API Drift warnings against baseline snapshot`, "warning");
+        } else {
+            this.showToast("No API Drift detected (symbols match API baseline)", "info");
+        }
+    }
+
+    static async setApiBaseline() {
+        try {
+            this.showToast("Creating Public API Baseline snapshot...", "info");
+            const res = await CodeUIAPI.setApiBaseline();
+            this.showToast(`API Baseline created for ${res.baseline_count} public symbols`, "success");
+            await this.loadData(false);
+            if (Sidebar.collapsed) {
+                Sidebar.toggleSidebar();
+            }
+            Sidebar.switchTab("defects");
+            Sidebar.setDefectSubFilter("api_drift");
+        } catch (e) {
+            this.showToast(`Failed to set API baseline: ${e.message}`, "error");
+        }
     }
 
     static toggleClusterHulls() {
@@ -177,14 +359,22 @@ class App {
                 const clean = filePart.replace(/^\.\//, "");
                 if (validFileSet.has(clean)) return clean;
 
-                // Match dotted imports (e.g. "codeui.core.graph" -> "codeui/core/graph.py")
+                // Match exact file without extension in valid files
+                for (const f of validFileSet) {
+                    const fNoExt = f.replace(/\.[^/.]+$/, "");
+                    if (f === clean || fNoExt === clean) {
+                        return f;
+                    }
+                }
+
+                // Match dotted imports or normalized slash paths
                 const slashed = clean.replace(/\./g, "/");
                 for (const f of validFileSet) {
                     const fClean = f.replace(/\.[^/.]+$/, "");
-                    if (f === slashed || fClean === slashed || f.endsWith("/" + slashed + ".py") || f.endsWith("/" + slashed + ".ts") || f.endsWith("/" + slashed + ".js") || f.endsWith("/" + slashed + "/__init__.py")) {
+                    if (f === slashed || fClean === slashed || f.endsWith("/" + slashed) || fClean.endsWith("/" + slashed)) {
                         return f;
                     }
-                    if (f.replace(/^\.\//, "") === slashed + ".py" || f.replace(/^\.\//, "") === slashed + ".ts") {
+                    if (f.endsWith("/" + slashed + "/index") || fClean.endsWith("/" + slashed + "/index") || f.endsWith("/" + slashed + "/__init__") || fClean.endsWith("/" + slashed + "/__init__")) {
                         return f;
                     }
                 }
@@ -194,9 +384,12 @@ class App {
                     const fromDir = fromFile.includes("/") ? fromFile.substring(0, fromFile.lastIndexOf("/")) : "";
                     const candidate = fromDir ? `${fromDir}/${clean.replace(/^\.\//, "")}` : clean.replace(/^\.\//, "");
                     if (validFileSet.has(candidate)) return candidate;
-                    if (validFileSet.has(candidate + ".ts")) return candidate + ".ts";
-                    if (validFileSet.has(candidate + ".js")) return candidate + ".js";
-                    if (validFileSet.has(candidate + ".py")) return candidate + ".py";
+                    for (const f of validFileSet) {
+                        const fNoExt = f.replace(/\.[^/.]+$/, "");
+                        if (fNoExt === candidate || fNoExt === candidate + "/index" || fNoExt === candidate + "/__init__") {
+                            return f;
+                        }
+                    }
                 }
 
                 // Match by file stem/name fallback
@@ -246,25 +439,90 @@ class App {
             const links = Array.from(linkMap.values());
             window.mainCanvas.setData(nodes, links);
         } else {
-            const symbols = (appState.rawGraph.symbols || []).filter(s => {
-                if (query && !s.name.toLowerCase().includes(query) && !s.qualified_name.toLowerCase().includes(query)) return false;
+            const isKindActive = (k) => {
+                if (!k) return false;
+                const kind = String(k).toLowerCase();
+                if (appState.symbolKindFilters && appState.symbolKindFilters[kind] !== undefined) {
+                    return !!appState.symbolKindFilters[kind];
+                }
                 return true;
+            };
+
+            const nodes = [];
+            const filesWithSymbols = new Set();
+
+            (appState.rawGraph.symbols || []).forEach(s => {
+                if (s.kind === "file") return;
+                if (!isKindActive(s.kind)) return;
+                if (query && !s.name.toLowerCase().includes(query) && !s.qualified_name?.toLowerCase().includes(query)) {
+                    return;
+                }
+
+                const fileId = s.location?.file_id || "";
+                if (fileId) filesWithSymbols.add(fileId);
+
+                const fileMeta = filesInfo[fileId] || {};
+                const cleanPath = fileId.replace(/\\/g, "/").replace(/^\.\//, "");
+                const parts = cleanPath.split("/").filter(Boolean);
+                const folder = fileMeta.folder || (parts.length > 1 ? parts.slice(0, -1).join("/") : "root");
+                const mainFolder = fileMeta.main_folder || (parts.length > 1 ? parts[0] : "root");
+                const subfolder = fileMeta.subfolder || (parts.length > 2 ? parts[parts.length - 2] : (parts.length > 1 ? parts[0] : "root"));
+
+                nodes.push({
+                    id: s.id,
+                    label: s.name,
+                    kind: s.kind,
+                    type: "symbol",
+                    fileId: fileId,
+                    folder: folder,
+                    mainFolder: mainFolder,
+                    subfolder: subfolder,
+                    layer: fileMeta.layer || "shared",
+                    feature: fileMeta.feature || s.kind,
+                    rawSymbol: s,
+                    radius: s.kind === "class" ? 11 : (s.kind === "function" ? 9 : (s.kind === "method" ? 7 : (s.kind === "variable" ? 5 : 8)))
+                });
             });
 
-            const symIdSet = new Set(symbols.map(s => s.id));
-            const nodes = symbols.map(s => ({
-                id: s.id,
-                label: s.name,
-                kind: s.kind,
-                layer: "frontend",
-                feature: s.kind,
-                radius: s.kind === "class" ? 8 : (s.kind === "function" ? 6 : 4)
-            }));
+            // Add lone file nodes ONLY for files that have 0 detected symbols
+            (appState.rawGraph.files || []).forEach(file => {
+                const fileInfo = filesInfo[file] || {};
+                const symCount = typeof fileInfo.symbol_count === "number" ? fileInfo.symbol_count : 0;
+                if (!filesWithSymbols.has(file) && symCount === 0) {
+                    if (query && !file.toLowerCase().includes(query)) return;
+                    const cleanPath = file.replace(/\\/g, "/").replace(/^\.\//, "");
+                    const parts = cleanPath.split("/").filter(Boolean);
+                    const folder = fileInfo.folder || (parts.length > 1 ? parts.slice(0, -1).join("/") : "root");
+                    const mainFolder = fileInfo.main_folder || (parts.length > 1 ? parts[0] : "root");
+                    const subfolder = fileInfo.subfolder || (parts.length > 2 ? parts[parts.length - 2] : (parts.length > 1 ? parts[0] : "root"));
 
+                    nodes.push({
+                        id: file,
+                        label: file.split("/").pop(),
+                        kind: "file",
+                        type: "file",
+                        fileId: file,
+                        folder: folder,
+                        mainFolder: mainFolder,
+                        subfolder: subfolder,
+                        layer: fileInfo.layer || "other",
+                        feature: fileInfo.feature || "root",
+                        radius: 12,
+                        isLoneFile: true
+                    });
+                }
+            });
+
+            const activeNodeIds = new Set(nodes.map(n => n.id));
             const links = [];
             (appState.rawGraph.edges || []).forEach(e => {
-                if (symIdSet.has(e.source_id) && symIdSet.has(e.target_id)) {
-                    links.push({ source: e.source_id, target: e.target_id, kind: e.kind, weight: e.weight || 1 });
+                if (activeNodeIds.has(e.source_id) && activeNodeIds.has(e.target_id) && e.source_id !== e.target_id) {
+                    links.push({
+                        source: e.source_id,
+                        target: e.target_id,
+                        kind: e.kind || "calls",
+                        weight: e.weight || 1
+                    });
                 }
             });
 
@@ -650,9 +908,11 @@ class App {
                 const next = layouts[(layouts.indexOf(appState.layoutMode) + 1) % layouts.length];
                 this.switchLayoutMode(next);
             } else if (e.key === "t" || e.key === "T") {
-                const themes = ["dark", "cyber", "light"];
-                const next = themes[(themes.indexOf(appState.theme) + 1) % themes.length];
+                const themeKeys = window.ThemeManager ? Object.keys(window.ThemeManager.themes) : ["dark", "cyber", "light", "forest", "monokai"];
+                const currentIndex = Math.max(0, themeKeys.indexOf(appState.theme));
+                const next = themeKeys[(currentIndex + 1) % themeKeys.length];
                 this.switchTheme(next);
+                this.showToast(`Theme: ${window.ThemeManager?.getTheme(next)?.name || next}`, "info");
             } else if (e.key === "1") {
                 Sidebar.switchTab("files");
             } else if (e.key === "2") {
@@ -666,6 +926,7 @@ class App {
             } else if (e.key === "Escape") {
                 this.closeQuickPalette();
                 this.hideShortcutsModal();
+                this.closeSymbolFilterPopover();
                 this.clearTracer();
                 this.hideNodeHUD();
                 window.mainCanvas?.clearNeighborhoodIsolation();
@@ -710,13 +971,17 @@ class App {
     }
 
     static exportZip() {
-        this.showToast("Generating ZIP export bundle...", "info");
         CodeUIAPI.exportZip();
     }
 
     static setupGlobalClickListener() {
         document.addEventListener("click", e => {
-            if (e.target.closest("button, select, input, textarea, a, .palette-modal-card, .minimap-container, .sim-controls, .zoom-controls, .shortcuts-grid")) {
+            const isInsideFilter = e.target.closest("#symbol-filter-popover, #btn-toggle-symbol-filter-popover");
+            if (!isInsideFilter) {
+                App.closeSymbolFilterPopover();
+            }
+
+            if (e.target.closest("button, select, input, textarea, a, .palette-modal-card, .minimap-container, .sim-controls, .zoom-controls, .shortcuts-grid, .symbol-filter-popover")) {
                 return;
             }
             if (e.target.tagName !== "CANVAS") {
@@ -729,6 +994,35 @@ class App {
                 }
             }
         });
+    }
+
+    static toggleHeaderCompact() {
+        const header = document.querySelector("header");
+        const btn = document.getElementById("btn-toggle-header-compact");
+        const icon = document.getElementById("header-toggle-icon");
+        if (!header) return;
+
+        const isCompact = header.classList.toggle("compact-header");
+
+        if (btn) {
+            btn.title = isCompact
+                ? "Show Header Controls & Settings"
+                : "Toggle Fullscreen Graph Mode (Hide Header Controls)";
+            btn.classList.toggle("active", isCompact);
+        }
+
+        if (icon) {
+            icon.innerHTML = isCompact
+                ? '<path d="m6 9 6 6 6-6"/>'
+                : '<path d="m18 15-6-6-6 6"/>';
+        }
+
+        setTimeout(() => {
+            window.dispatchEvent(new Event("resize"));
+            if (window.mainCanvas) {
+                window.mainCanvas.setupCanvas();
+            }
+        }, 50);
     }
 
     static showToast(message, type = "info") {

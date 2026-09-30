@@ -18,9 +18,11 @@ class GraphCanvas {
         this.nodes = [];
         this.links = [];
         this.transform = { x: 0, y: 0, k: 1 };
+        this.isInteractive = true;
         this.dragNode = null;
         this.hoverNode = null;
         this.isPanning = false;
+        this.dragStartPos = null;
         this.lastMouse = { x: 0, y: 0 };
         this.charge = -250;
         this.alpha = 1.0;
@@ -29,10 +31,10 @@ class GraphCanvas {
         this.animatingLayout = false;
         this.pulsePhase = 0;
 
-        // Touch tracking
         this.touchStartDist = 0;
         this.touchStartScale = 1;
         this.touchStartCenter = { x: 0, y: 0 };
+        this.touchStartPos = null;
         this.lastTouchEndTime = 0;
 
         this.setupCanvas();
@@ -46,8 +48,8 @@ class GraphCanvas {
         this.resizeListener = () => {
             const parent = this.canvas.parentElement;
             const rect = parent ? parent.getBoundingClientRect() : null;
-            const w = Math.max(100, (rect && rect.width > 0 ? rect.width : (this.isMain ? 800 : 560)));
-            const h = Math.max(100, (rect && rect.height > 0 ? rect.height : (this.isMain ? 600 : 360)));
+            const w = Math.max(100, Math.floor(rect && rect.width > 0 ? rect.width : (this.canvas.clientWidth || window.innerWidth)));
+            const h = Math.max(100, Math.floor(rect && rect.height > 0 ? rect.height : (this.canvas.clientHeight || window.innerHeight)));
             this.canvas.width = w * window.devicePixelRatio;
             this.canvas.height = h * window.devicePixelRatio;
             this.ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -56,6 +58,23 @@ class GraphCanvas {
         };
         window.addEventListener("resize", this.resizeListener);
         this.resizeListener();
+    }
+
+    handleResize() {
+        if (typeof this.resizeListener === "function") {
+            this.resizeListener();
+        }
+    }
+
+    selectAndCenterNode(nodeId) {
+        if (!nodeId || !this.nodes) return;
+        const node = this.nodes.find(n => n.id === nodeId);
+        if (node) {
+            if (typeof this.isolateNeighborhood === "function") {
+                this.isolateNeighborhood(node.id);
+            }
+            this.smoothPanZoomTo(node.x, node.y, 1.8);
+        }
     }
 
     destroy() {
@@ -123,7 +142,10 @@ class GraphCanvas {
 
         if (!this.isMain) {
             this.computeSubgraphLayout();
-            this.alpha = 0;
+            this.alpha = 0.18;
+            setTimeout(() => {
+                if (this.canvas) this.fitToScreen();
+            }, 60);
         } else if (appState.layoutMode !== "force") {
             this.computeLayout(appState.layoutMode, false);
         } else {
@@ -162,7 +184,7 @@ class GraphCanvas {
             const otherExtNodes = externalNodes.filter(n => !incomingIds.has(n.id) && !outgoingIds.has(n.id));
 
             const localCount = localNodes.length;
-            const localRadius = Math.min(w * 0.22, h * 0.28, 40 + localCount * 14);
+            const localRadius = Math.max(45, Math.min(w * 0.22, h * 0.26, 40 + localCount * 12));
             localNodes.forEach((node, i) => {
                 const angle = (i / Math.max(1, localCount)) * Math.PI * 2 - Math.PI / 2;
                 node.x = cx + Math.cos(angle) * localRadius;
@@ -173,9 +195,9 @@ class GraphCanvas {
 
             const inCount = incomingNodes.length;
             if (inCount > 0) {
-                const inSpacing = Math.min(65, (h - 60) / Math.max(1, inCount));
+                const inSpacing = Math.max(32, Math.min(48, (h - 40) / Math.max(1, inCount)));
                 const inStartY = cy - ((inCount - 1) * inSpacing) / 2;
-                const inX = Math.max(50, cx - localRadius - 120);
+                const inX = Math.max(45, cx - localRadius - 65);
                 incomingNodes.forEach((node, i) => {
                     node.x = inX;
                     node.y = inStartY + i * inSpacing;
@@ -187,9 +209,9 @@ class GraphCanvas {
             const allOut = [...outgoingNodes, ...otherExtNodes];
             const outCount = allOut.length;
             if (outCount > 0) {
-                const outSpacing = Math.min(65, (h - 60) / Math.max(1, outCount));
+                const outSpacing = Math.max(32, Math.min(48, (h - 40) / Math.max(1, outCount)));
                 const outStartY = cy - ((outCount - 1) * outSpacing) / 2;
-                const outX = Math.min(w - 50, cx + localRadius + 120);
+                const outX = Math.min(w - 45, cx + localRadius + 65);
                 allOut.forEach((node, i) => {
                     node.x = outX;
                     node.y = outStartY + i * outSpacing;
@@ -238,7 +260,6 @@ class GraphCanvas {
     }
 
     setupEvents() {
-        let lastClickTime = 0;
         const getPos = e => {
             const rect = this.canvas.getBoundingClientRect();
             return {
@@ -263,6 +284,7 @@ class GraphCanvas {
         };
 
         this.canvas.addEventListener("mousedown", e => {
+            if (this.isMain && this.isInteractive === false) return;
             const pos = getPos(e);
             this.dragNode = findNode(pos.x, pos.y);
             this.dragStartPos = { x: pos.x, y: pos.y, screenX: e.clientX, screenY: e.clientY };
@@ -277,9 +299,12 @@ class GraphCanvas {
         });
 
         this.canvas.addEventListener("mousemove", e => {
+            if (this.isMain && this.isInteractive === false) return;
             const pos = getPos(e);
             if (this.dragNode) {
-                const dist = Math.hypot(e.clientX - this.dragStartPos.screenX, e.clientY - this.dragStartPos.screenY);
+                const startX = this.dragStartPos ? this.dragStartPos.screenX : e.clientX;
+                const startY = this.dragStartPos ? this.dragStartPos.screenY : e.clientY;
+                const dist = Math.hypot(e.clientX - startX, e.clientY - startY);
                 if (dist > 6) {
                     this.hasMovedDrag = true;
                     this.dragNode.fx = pos.x;
@@ -288,17 +313,21 @@ class GraphCanvas {
                     this.dragNode.y = pos.y;
                     this.dragNode.vx = 0;
                     this.dragNode.vy = 0;
-                    if (this.isMain && appState.layoutMode === "force") {
-                        this.alpha = Math.max(this.alpha, 0.06);
+                    if (!this.isMain || appState.layoutMode === "force") {
+                        this.alpha = Math.max(this.alpha, 0.25);
                     }
                 }
             } else if (this.isPanning) {
-                const dist = Math.hypot(e.clientX - this.dragStartPos.screenX, e.clientY - this.dragStartPos.screenY);
+                const startX = this.dragStartPos ? this.dragStartPos.screenX : (this.lastMouse ? this.lastMouse.x : e.clientX);
+                const startY = this.dragStartPos ? this.dragStartPos.screenY : (this.lastMouse ? this.lastMouse.y : e.clientY);
+                const dist = Math.hypot(e.clientX - startX, e.clientY - startY);
                 if (dist > 6) {
                     this.hasMovedDrag = true;
                 }
-                this.transform.x += pos.rawX - this.lastMouse.x;
-                this.transform.y += pos.rawY - this.lastMouse.y;
+                const prevX = this.lastMouse ? this.lastMouse.x : pos.rawX;
+                const prevY = this.lastMouse ? this.lastMouse.y : pos.rawY;
+                this.transform.x += pos.rawX - prevX;
+                this.transform.y += pos.rawY - prevY;
                 this.lastMouse = { x: pos.rawX, y: pos.rawY };
                 if (this.miniMap) this.miniMap.update();
             } else {
@@ -323,12 +352,16 @@ class GraphCanvas {
                 this.dragNode.vx = 0;
                 this.dragNode.vy = 0;
                 this.dragNode = null;
+                if (!this.isMain || appState.layoutMode === "force") {
+                    this.alpha = Math.max(this.alpha, 0.2);
+                }
             }
             this.isPanning = false;
+            this.dragStartPos = null;
         };
         window.addEventListener("mouseup", this.onWindowMouseUp);
 
-        const handleNodeActivation = (node) => {
+        const handleNodeActivation = (node, isDoubleClick = false) => {
             if (!node) return;
             if (this.isMain) {
                 if (appState.tracerActive) {
@@ -339,13 +372,26 @@ class GraphCanvas {
                 appState.selectedFileNodeId = node.id;
                 this.isolateNeighborhood(node.id);
                 Sidebar.highlightSelectedCard(node.id);
-                App.hideNodeHUD();
-                const targetFile = appState.graphMode === "files" ? node.id : node.id.split("::")[0];
-                const targetSymbol = appState.graphMode === "files" ? null : node.id;
-                SubGraphManager.openWindow(targetFile, targetSymbol);
+
+                const isSymbolNode = appState.graphMode === "symbols" ||
+                                     node.type === "symbol" ||
+                                     Boolean(node.rawSymbol) ||
+                                     (typeof node.id === "string" && node.id.includes("::"));
+
+                let targetFile = appState.graphMode === "files" ? node.id : (node.fileId || (typeof node.id === "string" ? node.id.split("::")[0] : ""));
+                let targetSymbol = isSymbolNode ? node.id : null;
+                if (node.rawSymbol && node.rawSymbol.location && node.rawSymbol.location.file_id) {
+                    targetFile = node.rawSymbol.location.file_id;
+                    targetSymbol = node.rawSymbol.id;
+                }
+
+                if (isDoubleClick) {
+                    SubGraphManager.openWindow(targetFile, targetSymbol, null, "", "graph");
+                }
             } else {
+                this.selectedNodeId = node.id;
                 this.isolateNeighborhood(node.id);
-                if (this.lastClickedNodeId === node.id && this.onNodeDoubleClick) {
+                if (isDoubleClick && this.onNodeDoubleClick) {
                     this.onNodeDoubleClick(node);
                 } else if (this.onNodeSelected) {
                     this.onNodeSelected(node);
@@ -368,7 +414,12 @@ class GraphCanvas {
             }
         };
 
+        let lastClickTime = 0;
+        let lastClickNodeId = null;
+        let lastDblClickTime = 0;
+
         this.canvas.addEventListener("click", e => {
+            if (this.isMain && this.isInteractive === false) return;
             if (this.lastTouchEndTime && (Date.now() - this.lastTouchEndTime < 450)) {
                 return;
             }
@@ -378,15 +429,49 @@ class GraphCanvas {
             }
             const pos = getPos(e);
             const node = findNode(pos.x, pos.y);
+            const now = Date.now();
+
             if (node) {
-                handleNodeActivation(node);
+                const timeDiff = now - lastClickTime;
+                const isSlowDblClick = (lastClickNodeId === node.id) && (timeDiff < 650);
+
+                if (isSlowDblClick) {
+                    lastClickTime = 0;
+                    lastClickNodeId = null;
+                    lastDblClickTime = now;
+                    handleNodeActivation(node, true);
+                } else {
+                    lastClickTime = now;
+                    lastClickNodeId = node.id;
+                    handleNodeActivation(node, false);
+                }
             } else {
+                lastClickTime = 0;
+                lastClickNodeId = null;
                 handleEmptyCanvasClick();
             }
             this.lastClickedNodeId = node?.id || null;
         });
 
+        this.canvas.addEventListener("dblclick", e => {
+            if (this.isMain && this.isInteractive === false) return;
+            if (this.hasMovedDrag) return;
+            const now = Date.now();
+            if (now - lastDblClickTime < 450) {
+                return;
+            }
+            const pos = getPos(e);
+            const node = findNode(pos.x, pos.y);
+            if (node) {
+                lastDblClickTime = now;
+                lastClickTime = 0;
+                lastClickNodeId = null;
+                handleNodeActivation(node, true);
+            }
+        });
+
         this.canvas.addEventListener("wheel", e => {
+            if (this.isMain && this.isInteractive === false) return;
             e.preventDefault();
             const rect = this.canvas.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
@@ -401,6 +486,7 @@ class GraphCanvas {
         }, { passive: false });
 
         this.canvas.addEventListener("touchstart", e => {
+            if (this.isMain && this.isInteractive === false) return;
             if (e.touches.length === 1) {
                 const rect = this.canvas.getBoundingClientRect();
                 const rawX = e.touches[0].clientX - rect.left;
@@ -432,6 +518,10 @@ class GraphCanvas {
         }, { passive: false });
 
         this.canvas.addEventListener("touchmove", e => {
+            if (this.isMain && this.isInteractive === false) return;
+            if (e.cancelable && (this.isPanning || this.dragNode || e.touches.length > 1)) {
+                e.preventDefault();
+            }
             if (e.touches.length === 1) {
                 const rect = this.canvas.getBoundingClientRect();
                 const rawX = e.touches[0].clientX - rect.left;
@@ -488,13 +578,40 @@ class GraphCanvas {
             this.isPanning = false;
             if (!this.hasMovedDrag && this.touchStartPos) {
                 const node = findNode(this.touchStartPos.x, this.touchStartPos.y);
+                const now = Date.now();
                 if (node) {
-                    handleNodeActivation(node);
+                    const timeDiff = now - lastClickTime;
+                    const isSlowDblClick = (lastClickNodeId === node.id) && (timeDiff < 650);
+                    if (isSlowDblClick) {
+                        lastClickTime = 0;
+                        lastClickNodeId = null;
+                        lastDblClickTime = now;
+                        handleNodeActivation(node, true);
+                    } else {
+                        lastClickTime = now;
+                        lastClickNodeId = node.id;
+                        handleNodeActivation(node, false);
+                    }
                 } else {
+                    lastClickTime = 0;
+                    lastClickNodeId = null;
                     handleEmptyCanvasClick();
                 }
                 this.lastClickedNodeId = node?.id || null;
             }
+            this.touchStartDist = 0;
+            this.touchStartPos = null;
+        });
+
+        this.canvas.addEventListener("touchcancel", () => {
+            if (this.dragNode) {
+                this.dragNode.fx = null;
+                this.dragNode.fy = null;
+                this.dragNode.vx = 0;
+                this.dragNode.vy = 0;
+                this.dragNode = null;
+            }
+            this.isPanning = false;
             this.touchStartDist = 0;
             this.touchStartPos = null;
         });
@@ -574,33 +691,93 @@ class GraphCanvas {
                 });
             });
         } else if (layoutName === "clusters") {
-            const clusters = new Map();
-            this.nodes.forEach(n => {
-                const feat = n.feature || "root";
-                if (!clusters.has(feat)) clusters.set(feat, []);
-                clusters.get(feat).push(n);
-            });
+            if (this.isMain && appState.graphMode === "symbols") {
+                // Hierarchical clustering: Main Folder -> Subfolder -> File Subcluster -> Symbols
+                const hierarchy = new Map();
+                this.nodes.forEach(n => {
+                    const mf = n.mainFolder || "root";
+                    const sf = n.subfolder || "root";
+                    const fid = n.fileId || "root";
+                    if (!hierarchy.has(mf)) hierarchy.set(mf, new Map());
+                    const subMap = hierarchy.get(mf);
+                    if (!subMap.has(sf)) subMap.set(sf, new Map());
+                    const fileMap = subMap.get(sf);
+                    if (!fileMap.has(fid)) fileMap.set(fid, []);
+                    fileMap.get(fid).push(n);
+                });
 
-            const featKeys = Array.from(clusters.keys());
-            const clusterCount = featKeys.length;
-            const clusterRadius = Math.max(140, Math.min(w, h) * 0.38 + clusterCount * 12);
+                const mainFolders = Array.from(hierarchy.keys());
+                const mfCount = mainFolders.length;
+                const mfRadius = Math.max(220, Math.min(w, h) * 0.44 + mfCount * 28);
 
-            featKeys.forEach((feat, cIdx) => {
-                const clusterAngle = (cIdx / clusterCount) * Math.PI * 2 - Math.PI / 2;
-                const clusterX = cx + Math.cos(clusterAngle) * clusterRadius;
-                const clusterY = cy + Math.sin(clusterAngle) * clusterRadius;
-                const cNodes = clusters.get(feat);
-                const subCount = cNodes.length;
-                const subRadius = Math.max(50, Math.sqrt(subCount) * 30);
+                mainFolders.forEach((mf, mfIdx) => {
+                    const mfAngle = (mfIdx / Math.max(1, mfCount)) * Math.PI * 2 - Math.PI / 2;
+                    const mfX = cx + Math.cos(mfAngle) * mfRadius;
+                    const mfY = cy + Math.sin(mfAngle) * mfRadius;
 
-                cNodes.forEach((node, sIdx) => {
-                    const subAngle = (sIdx / subCount) * Math.PI * 2;
-                    targets.set(node.id, {
-                        x: clusterX + Math.cos(subAngle) * subRadius,
-                        y: clusterY + Math.sin(subAngle) * subRadius
+                    const subMap = hierarchy.get(mf);
+                    const subfolders = Array.from(subMap.keys());
+                    const sfCount = subfolders.length;
+                    const sfRadius = Math.max(110, Math.sqrt(sfCount) * 80);
+
+                    subfolders.forEach((sf, sfIdx) => {
+                        const sfAngle = (sfIdx / Math.max(1, sfCount)) * Math.PI * 2;
+                        const sfX = mfX + Math.cos(sfAngle) * sfRadius;
+                        const sfY = mfY + Math.sin(sfAngle) * sfRadius;
+
+                        const fileMap = subMap.get(sf);
+                        const files = Array.from(fileMap.keys());
+                        const fileCount = files.length;
+                        const fileRadius = Math.max(70, Math.sqrt(fileCount) * 60);
+
+                        files.forEach((fid, fIdx) => {
+                            const fAngle = (fIdx / Math.max(1, fileCount)) * Math.PI * 2;
+                            const fileX = sfX + Math.cos(fAngle) * fileRadius;
+                            const fileY = sfY + Math.sin(fAngle) * fileRadius;
+
+                            const symNodes = fileMap.get(fid) || [];
+                            const symCount = symNodes.length;
+                            const symRadius = symCount <= 1 ? 0 : Math.max(45, 28 + symCount * 12);
+
+                            symNodes.forEach((node, sIdx) => {
+                                const sAngle = (sIdx / Math.max(1, symCount)) * Math.PI * 2;
+                                targets.set(node.id, {
+                                    x: fileX + Math.cos(sAngle) * symRadius,
+                                    y: fileY + Math.sin(sAngle) * symRadius
+                                });
+                            });
+                        });
                     });
                 });
-            });
+            } else {
+                const clusters = new Map();
+                this.nodes.forEach(n => {
+                    const feat = n.feature || "root";
+                    if (!clusters.has(feat)) clusters.set(feat, []);
+                    clusters.get(feat).push(n);
+                });
+
+                const featKeys = Array.from(clusters.keys());
+                const clusterCount = featKeys.length;
+                const clusterRadius = Math.max(140, Math.min(w, h) * 0.38 + clusterCount * 12);
+
+                featKeys.forEach((feat, cIdx) => {
+                    const clusterAngle = (cIdx / clusterCount) * Math.PI * 2 - Math.PI / 2;
+                    const clusterX = cx + Math.cos(clusterAngle) * clusterRadius;
+                    const clusterY = cy + Math.sin(clusterAngle) * clusterRadius;
+                    const cNodes = clusters.get(feat);
+                    const subCount = cNodes.length;
+                    const subRadius = Math.max(50, Math.sqrt(subCount) * 30);
+
+                    cNodes.forEach((node, sIdx) => {
+                        const subAngle = (sIdx / subCount) * Math.PI * 2;
+                        targets.set(node.id, {
+                            x: clusterX + Math.cos(subAngle) * subRadius,
+                            y: clusterY + Math.sin(subAngle) * subRadius
+                        });
+                    });
+                });
+            }
         }
 
         if (animate) {
@@ -652,7 +829,11 @@ class GraphCanvas {
         requestAnimationFrame(step);
     }
 
-    isolateNeighborhood(nodeId, maxDepth = 10) {
+    isolateNeighborhood(target, maxDepth = 10) {
+        if (!target) return;
+        const nodeId = typeof target === "object" ? target.id : target;
+        if (!nodeId) return;
+
         const reachable = new Map();
         reachable.set(nodeId, { depth: 0, direction: "root" });
 
@@ -662,6 +843,7 @@ class GraphCanvas {
         this.links.forEach(l => {
             const s = typeof l.source === "object" ? l.source.id : l.source;
             const t = typeof l.target === "object" ? l.target.id : l.target;
+            if (!s || !t) return;
             if (!forwardAdj.has(s)) forwardAdj.set(s, []);
             forwardAdj.get(s).push(t);
 
@@ -696,6 +878,7 @@ class GraphCanvas {
         }
 
         this.focusedNeighborhood = reachable;
+        this.selectedNodeId = nodeId;
         if (this.isMain) {
             appState.focusedNeighborhood = reachable;
         }
@@ -703,6 +886,7 @@ class GraphCanvas {
 
     clearNeighborhoodIsolation() {
         this.focusedNeighborhood = null;
+        this.selectedNodeId = null;
         if (this.isMain) {
             appState.focusedNeighborhood = null;
             appState.selectedFileNodeId = null;
@@ -756,9 +940,19 @@ class GraphCanvas {
             extBadge = `<div style="font-size:0.65rem; color:#c084fc; font-weight:700; margin-bottom:2px;">🌐 External Cross-File Node</div>`;
         }
 
+        let kindBadge = "";
+        if (node.isLoneFile || node.kind === "file") {
+            kindBadge = `<span class="badge" style="background:#475569; color:#f1f5f9;">FILE</span>`;
+        } else if (node.kind) {
+            kindBadge = `<span class="badge" style="background:var(--accent); color:#ffffff;">${node.kind.toUpperCase()}</span>`;
+        }
+
         tooltip.innerHTML = `
             ${extBadge}
-            <div style="font-weight:700; color:var(--text-main);">${node.label}</div>
+            <div style="font-weight:700; color:var(--text-main); display:flex; align-items:center; gap:6px;">
+                <span>${node.label}</span>
+                ${kindBadge}
+            </div>
             <div style="font-size:0.68rem; color:var(--text-muted); margin-bottom:4px;">${node.id}</div>
             <div style="display:flex; gap:6px; font-size:0.68rem;">
                 <span class="badge ${node.layer || 'shared'}">${node.layer || 'other'}</span>
@@ -766,8 +960,10 @@ class GraphCanvas {
             </div>
             ${node.isExternal && node.fileId ? `<div style="font-size:0.64rem; color:var(--accent); margin-top:4px;">Double-click to open ${node.fileId.split('/').pop()}</div>` : ''}
         `;
-        tooltip.style.left = `${screenX + 14}px`;
-        tooltip.style.top = `${screenY + 14}px`;
+        if (typeof screenX === "number" && typeof screenY === "number") {
+            tooltip.style.left = `${screenX + 14}px`;
+            tooltip.style.top = `${screenY + 14}px`;
+        }
         tooltip.style.display = "block";
     }
 
@@ -777,10 +973,16 @@ class GraphCanvas {
     }
 
     startLoop() {
+        this.isRunning = true;
         const step = () => {
+            if (!this.isRunning) return;
             this.pulsePhase = (this.pulsePhase + 0.04) % (Math.PI * 2);
-            if (this.isRunning && this.isMain && appState.layoutMode === "force" && !this.animatingLayout) {
-                this.updatePhysics();
+            if (!this.animatingLayout) {
+                if (this.isMain) {
+                    if (appState.layoutMode === "force") this.updatePhysics();
+                } else {
+                    this.updatePhysics();
+                }
             }
             this.render();
             this.animFrameId = requestAnimationFrame(step);
@@ -789,16 +991,18 @@ class GraphCanvas {
     }
 
     updatePhysics() {
-        if (!this.isMain || appState.layoutMode !== "force" || this.alpha < 0.003 || !this.nodes || this.nodes.length === 0) return;
-        this.alpha *= 0.96;
+        if (this.alpha < 0.003 || !this.nodes || this.nodes.length === 0) return;
+        if (this.isMain && appState.layoutMode !== "force") return;
+        this.alpha *= 0.965;
         if (this.alpha < 0.003) {
             this.alpha = 0;
             return;
         }
 
         const count = this.nodes.length;
-        const repulsionStrength = Math.abs(this.charge || 250) * 16;
-        const maxPhysicsNodes = Math.min(count, 250);
+        const isSymMode = this.isMain && appState.graphMode === "symbols";
+        const repulsionStrength = !this.isMain ? 650 : (Math.abs(this.charge || (isSymMode ? 340 : 250)) * (isSymMode ? 22 : 16));
+        const maxPhysicsNodes = Math.min(count, 350);
 
         // 1. Coulomb Repulsion with distance threshold & node capping for fluid 60FPS
         for (let i = 0; i < maxPhysicsNodes; i++) {
@@ -807,17 +1011,17 @@ class GraphCanvas {
                 const n2 = this.nodes[j];
                 let dx = n2.x - n1.x;
                 let dy = n2.y - n1.y;
-                if (Math.abs(dx) > 500 || Math.abs(dy) > 500) continue;
+                if (Math.abs(dx) > 600 || Math.abs(dy) > 600) continue;
                 if (dx === 0 && dy === 0) {
                     dx = (Math.random() - 0.5) * 2;
                     dy = (Math.random() - 0.5) * 2;
                 }
                 const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist > 500) continue;
-                const distClamped = Math.max(12, dist);
+                if (dist > 600) continue;
+                const distClamped = Math.max(10, dist);
 
                 const repForce = (repulsionStrength * this.alpha) / (distClamped * distClamped);
-                const force = Math.min(30, repForce);
+                const force = Math.min(35, repForce);
                 const fx = (dx / distClamped) * force;
                 const fy = (dy / distClamped) * force;
 
@@ -826,10 +1030,11 @@ class GraphCanvas {
                 if (!n2.fx) { n2.vx += fx; n2.vy += fy; }
 
                 // Elastic anti-overlap separation
-                const minDistance = (n1.radius || 8) + (n2.radius || 8) + 40;
+                const basePadding = !this.isMain ? 18 : (isSymMode ? 64 : 42);
+                const minDistance = (n1.radius || 8) + (n2.radius || 8) + basePadding;
                 if (dist < minDistance) {
                     const overlap = minDistance - dist;
-                    const sepPush = overlap * 0.35 * Math.max(0.3, this.alpha);
+                    const sepPush = overlap * 0.55 * Math.max(0.35, this.alpha);
                     const sx = (dx / distClamped) * sepPush;
                     const sy = (dy / distClamped) * sepPush;
                     if (!n1.fx) { n1.vx -= sx; n1.vy -= sy; }
@@ -849,8 +1054,8 @@ class GraphCanvas {
             }
             const dist = Math.sqrt(dx * dx + dy * dy);
             const distClamped = Math.max(1, dist);
-            const targetDist = 120;
-            const rawForce = (distClamped - targetDist) * 0.015 * this.alpha;
+            const targetDist = !this.isMain ? (this.focusedNeighborhood ? 46 : 58) : (isSymMode ? 120 : 105);
+            const rawForce = (distClamped - targetDist) * 0.02 * this.alpha;
             const force = Math.max(-18, Math.min(18, rawForce));
             const fx = (dx / distClamped) * force;
             const fy = (dy / distClamped) * force;
@@ -859,17 +1064,46 @@ class GraphCanvas {
             if (!l.target.fx) { l.target.vx -= fx; l.target.vy -= fy; }
         });
 
+        // 2b. Hierarchical cluster attraction in symbols mode (pulls symbols toward their file centroid)
+        if (this.isMain && appState.graphMode === "symbols" && this.nodes.length > 0) {
+            const fileCentroids = new Map();
+            this.nodes.forEach(n => {
+                const fid = n.fileId || n.folder || "root";
+                if (!fileCentroids.has(fid)) {
+                    fileCentroids.set(fid, { sumX: 0, sumY: 0, count: 0 });
+                }
+                const c = fileCentroids.get(fid);
+                c.sumX += n.x;
+                c.sumY += n.y;
+                c.count += 1;
+            });
+
+            const clusterPull = 0.00018 * this.alpha;
+            this.nodes.forEach(n => {
+                if (n.fx) return;
+                const fid = n.fileId || n.folder || "root";
+                const c = fileCentroids.get(fid);
+                if (c && c.count > 1) {
+                    const avgX = c.sumX / c.count;
+                    const avgY = c.sumY / c.count;
+                    n.vx += (avgX - n.x) * clusterPull;
+                    n.vy += (avgY - n.y) * clusterPull;
+                }
+            });
+        }
+
         // 3. Gentle Center Gravity & Velocity Integration
-        const w = (this.canvas.width / window.devicePixelRatio) || 800;
-        const h = (this.canvas.height / window.devicePixelRatio) || 600;
+        const w = (this.canvas.width / window.devicePixelRatio) || this.canvas.clientWidth || window.innerWidth;
+        const h = (this.canvas.height / window.devicePixelRatio) || this.canvas.clientHeight || window.innerHeight;
         const cx = w / 2;
         const cy = h / 2;
         const maxVelocity = 8;
+        const gravityStrength = !this.isMain ? 0.0014 : (this.isMain ? 0.00015 : 0.00035);
 
         this.nodes.forEach(n => {
             if (!n.fx) {
-                n.vx += (cx - n.x) * 0.00015 * this.alpha;
-                n.vy += (cy - n.y) * 0.00015 * this.alpha;
+                n.vx += (cx - n.x) * gravityStrength * this.alpha;
+                n.vy += (cy - n.y) * gravityStrength * this.alpha;
                 n.vx *= 0.80;
                 n.vy *= 0.80;
 
@@ -896,6 +1130,55 @@ class GraphCanvas {
         }
     }
 
+    drawNodePath(n, radiusOffset = 0) {
+        const kind = (n.kind || (n.isLoneFile ? "file" : "")).toLowerCase();
+        let baseR = n.radius || 8;
+        if (!this.isMain && baseR < 10) baseR = 10;
+        const r = baseR + radiusOffset;
+        this.ctx.beginPath();
+
+        if (kind === "class" || kind === "struct") {
+            for (let i = 0; i < 6; i++) {
+                const angle = (i * Math.PI) / 3 - Math.PI / 6;
+                const px = n.x + r * Math.cos(angle);
+                const py = n.y + r * Math.sin(angle);
+                if (i === 0) this.ctx.moveTo(px, py);
+                else this.ctx.lineTo(px, py);
+            }
+            this.ctx.closePath();
+        } else if (kind === "method") {
+            const hr = r * 1.15;
+            this.ctx.moveTo(n.x, n.y - hr);
+            this.ctx.lineTo(n.x + hr, n.y);
+            this.ctx.lineTo(n.x, n.y + hr);
+            this.ctx.lineTo(n.x - hr, n.y);
+            this.ctx.closePath();
+        } else if (kind === "interface" || kind === "enum" || kind === "type_alias" || kind === "type") {
+            for (let i = 0; i < 8; i++) {
+                const angle = (i * Math.PI) / 4 - Math.PI / 8;
+                const px = n.x + r * Math.cos(angle);
+                const py = n.y + r * Math.sin(angle);
+                if (i === 0) this.ctx.moveTo(px, py);
+                else this.ctx.lineTo(px, py);
+            }
+            this.ctx.closePath();
+        } else if (kind === "file" || n.isLoneFile) {
+            const w = r * 1.8;
+            const h = r * 1.4;
+            if (this.ctx.roundRect) {
+                this.ctx.roundRect(n.x - w / 2, n.y - h / 2, w, h, 3);
+            } else {
+                this.ctx.rect(n.x - w / 2, n.y - h / 2, w, h);
+            }
+            this.ctx.closePath();
+        } else if (kind === "variable" || kind === "constant" || kind === "property") {
+            const vr = Math.max(3.5, r * 0.7);
+            this.ctx.arc(n.x, n.y, vr, 0, Math.PI * 2);
+        } else {
+            this.ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        }
+    }
+
     render() {
         const w = this.canvas.width / window.devicePixelRatio;
         const h = this.canvas.height / window.devicePixelRatio;
@@ -906,7 +1189,7 @@ class GraphCanvas {
         this.ctx.scale(this.transform.k, this.transform.k);
 
         const focused = this.isMain ? appState.focusedNeighborhood : this.focusedNeighborhood;
-        const selNodeId = appState.selectedFileNodeId;
+        const selNodeId = this.isMain ? appState.selectedFileNodeId : (this.selectedNodeId || (this.focusedNeighborhood ? this.focusedNeighborhood.keys().next().value : null));
         const unusedNodeIds = appState.unusedHighlightMode ? appState.getUnusedNodeIds() : null;
         const tracePath = appState.activeTracePath || [];
         const isTracePathEdge = (srcId, tgtId) => {
@@ -922,7 +1205,17 @@ class GraphCanvas {
             this.renderClusterHulls();
         }
 
-        // 2. Draw Links
+        const themeColors = window.ThemeManager ? window.ThemeManager.getCanvasColors() : {
+            nodeText: "#f1f5f9",
+            nodeTextDim: "#94a3b8",
+            nodeTextExternal: "#e9d5ff",
+            nodeTextExternalFile: "#c084fc",
+            nodeHoverRing: "#f8fafc",
+            nodeSelectedRing: "#38bdf8",
+            linkStroke: "rgba(71, 85, 105, 0.35)",
+            linkStrokeDim: "rgba(71, 85, 105, 0.05)"
+        };
+
         this.links.forEach(l => {
             const isTrace = isTracePathEdge(l.source.id, l.target.id);
             const isHovered = this.hoverNode && (l.source === this.hoverNode || l.target === this.hoverNode);
@@ -930,21 +1223,21 @@ class GraphCanvas {
             const tgtFocus = focused ? focused.get(l.target.id) : null;
             const isConnectedToFocus = !!(srcFocus && tgtFocus);
 
-            let strokeColor = "rgba(71, 85, 105, 0.35)";
+            let strokeColor = themeColors.linkStroke;
             let lineWidth = 1.0;
 
             if (isTrace) {
-                strokeColor = "#38bdf8";
+                strokeColor = themeColors.nodeSelectedRing || "#38bdf8";
                 lineWidth = 3.0;
             } else if (isHovered) {
-                strokeColor = "#38bdf8";
+                strokeColor = themeColors.nodeSelectedRing || "#38bdf8";
                 lineWidth = 2.2;
             } else if (isConnectedToFocus) {
                 const minDepth = Math.min(srcFocus.depth, tgtFocus.depth);
                 lineWidth = minDepth === 0 ? 2.2 : 1.4;
-                strokeColor = (srcFocus.direction === "upstream" || tgtFocus.direction === "upstream") ? "#c084fc" : "#38bdf8";
+                strokeColor = (srcFocus.direction === "upstream" || tgtFocus.direction === "upstream") ? (themeColors.nodeTextExternalFile || "#c084fc") : (themeColors.nodeSelectedRing || "#38bdf8");
             } else if (focused) {
-                strokeColor = "rgba(71, 85, 105, 0.05)";
+                strokeColor = themeColors.linkStrokeDim;
             }
 
             this.ctx.strokeStyle = strokeColor;
@@ -975,7 +1268,7 @@ class GraphCanvas {
                 this.ctx.beginPath();
                 this.ctx.arc(px, py, 3.5, 0, Math.PI * 2);
                 this.ctx.fillStyle = "#ffffff";
-                this.ctx.shadowColor = "#38bdf8";
+                this.ctx.shadowColor = themeColors.nodeSelectedRing || "#38bdf8";
                 this.ctx.shadowBlur = 8;
                 this.ctx.fill();
                 this.ctx.shadowBlur = 0;
@@ -1014,53 +1307,52 @@ class GraphCanvas {
                 this.ctx.globalAlpha = 1.0;
             }
 
-            this.ctx.beginPath();
-            this.ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+            this.drawNodePath(n, 0);
             this.ctx.fillStyle = nodeColor;
             this.ctx.fill();
 
             if (n.isExternal) {
                 this.ctx.save();
                 this.ctx.setLineDash([3, 2]);
-                this.ctx.beginPath();
-                this.ctx.arc(n.x, n.y, n.radius + 3.5, 0, Math.PI * 2);
-                this.ctx.strokeStyle = "#c084fc";
+                this.drawNodePath(n, 3.5);
+                this.ctx.strokeStyle = themeColors.nodeTextExternalFile || "#c084fc";
                 this.ctx.lineWidth = 1.6;
                 this.ctx.stroke();
                 this.ctx.restore();
             }
 
             if (isTraced) {
-                this.ctx.beginPath();
-                this.ctx.arc(n.x, n.y, n.radius + 5, 0, Math.PI * 2);
-                this.ctx.strokeStyle = "#38bdf8";
+                this.drawNodePath(n, 5);
+                this.ctx.strokeStyle = themeColors.nodeSelectedRing || "#38bdf8";
                 this.ctx.lineWidth = 3;
                 this.ctx.stroke();
             } else if (isSelected) {
-                this.ctx.beginPath();
-                this.ctx.arc(n.x, n.y, n.radius + 4, 0, Math.PI * 2);
-                this.ctx.strokeStyle = "#38bdf8";
+                this.drawNodePath(n, 4);
+                this.ctx.strokeStyle = themeColors.nodeSelectedRing || "#38bdf8";
                 this.ctx.lineWidth = 2.5;
                 this.ctx.stroke();
             } else if (isHovered) {
-                this.ctx.beginPath();
-                this.ctx.arc(n.x, n.y, n.radius + 2.5, 0, Math.PI * 2);
-                this.ctx.strokeStyle = "#f8fafc";
+                this.drawNodePath(n, 2.5);
+                this.ctx.strokeStyle = themeColors.nodeHoverRing || "#f8fafc";
                 this.ctx.lineWidth = 1.5;
                 this.ctx.stroke();
             }
 
-            // Node Labels
             if (this.transform.k > 0.45 || isHovered || isSelected || isTraced || isInFocus) {
                 this.ctx.font = isSelected || isTraced ? "bold 11px sans-serif" : "10px sans-serif";
-                this.ctx.fillStyle = isUnused ? "#94a3b8" : (isSelected || isTraced ? "#38bdf8" : (n.isExternal ? "#e9d5ff" : "#f1f5f9"));
+                const textColor = isUnused
+                    ? themeColors.nodeTextDim
+                    : (isSelected || isTraced
+                        ? themeColors.nodeSelectedRing
+                        : (n.isExternal ? themeColors.nodeTextExternal : themeColors.nodeText));
+                this.ctx.fillStyle = textColor;
                 this.ctx.textAlign = "center";
                 this.ctx.fillText(n.label, n.x, n.y + n.radius + 12);
 
                 if (n.isExternal && n.fileId && (this.transform.k > 0.4 || isHovered || isSelected || isInFocus)) {
                     const extFile = n.fileId.split("/").pop();
                     this.ctx.font = "8px sans-serif";
-                    this.ctx.fillStyle = "#c084fc";
+                    this.ctx.fillStyle = themeColors.nodeTextExternalFile || "#c084fc";
                     this.ctx.fillText(`[${extFile}]`, n.x, n.y + n.radius + 22);
                 }
             }
@@ -1073,14 +1365,16 @@ class GraphCanvas {
 
     renderClusterHulls() {
         const clusters = new Map();
+        const isSymbolsMode = this.isMain && appState.graphMode === "symbols";
+
         this.nodes.forEach(n => {
-            const feat = n.feature || "root";
-            if (!clusters.has(feat)) clusters.set(feat, []);
-            clusters.get(feat).push(n);
+            const clusterKey = isSymbolsMode ? (n.fileId || n.folder || "root") : (n.feature || "root");
+            if (!clusters.has(clusterKey)) clusters.set(clusterKey, []);
+            clusters.get(clusterKey).push(n);
         });
 
-        clusters.forEach((nodes, feat) => {
-            if (nodes.length < 2) return;
+        clusters.forEach((nodes, key) => {
+            if (nodes.length < (isSymbolsMode ? 1 : 2)) return;
             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
             nodes.forEach(n => {
                 if (n.x < minX) minX = n.x;
@@ -1089,24 +1383,29 @@ class GraphCanvas {
                 if (n.y > maxY) maxY = n.y;
             });
 
-            const pad = 24;
-            const color = appState.getFeatureColor(feat);
+            const pad = isSymbolsMode ? 18 : 24;
+            const sampleNode = nodes[0];
+            const color = isSymbolsMode
+                ? (sampleNode.layer ? (appState.LAYER_COLORS[sampleNode.layer] || "#38bdf8") : "#38bdf8")
+                : appState.getFeatureColor(key);
+            const label = isSymbolsMode ? key.split("/").pop() : key;
+
             this.ctx.save();
             this.ctx.fillStyle = color;
             this.ctx.globalAlpha = 0.05;
             this.ctx.strokeStyle = color;
             this.ctx.lineWidth = 1;
             this.ctx.beginPath();
-            this.ctx.roundRect(minX - pad, minY - pad, maxX - minX + pad * 2, maxY - minY + pad * 2, 12);
+            this.ctx.roundRect(minX - pad, minY - pad, maxX - minX + pad * 2, maxY - minY + pad * 2, 10);
             this.ctx.fill();
-            this.ctx.globalAlpha = 0.2;
+            this.ctx.globalAlpha = 0.22;
             this.ctx.stroke();
 
-            this.ctx.globalAlpha = 0.6;
+            this.ctx.globalAlpha = 0.7;
             this.ctx.font = "bold 9px sans-serif";
             this.ctx.fillStyle = color;
             this.ctx.textAlign = "left";
-            this.ctx.fillText(feat, minX - pad + 8, minY - pad + 14);
+            this.ctx.fillText(label, minX - pad + 8, minY - pad + 14);
             this.ctx.restore();
         });
     }
@@ -1168,14 +1467,15 @@ class GraphCanvas {
         const spanX = Math.max(100, maxX - minX + pad * 2);
         const spanY = Math.max(100, maxY - minY + pad * 2);
 
-        const w = (this.canvas.width / window.devicePixelRatio) || 800;
-        const h = (this.canvas.height / window.devicePixelRatio) || 600;
+        const w = (this.canvas.width / window.devicePixelRatio) || this.canvas.clientWidth || window.innerWidth;
+        const h = (this.canvas.height / window.devicePixelRatio) || this.canvas.clientHeight || window.innerHeight;
 
         const k = Math.min(w / spanX, h / spanY, 1.8);
         const midX = (minX + maxX) / 2;
         const midY = (minY + maxY) / 2;
 
-        this.transform.k = Math.max(0.15, isFinite(k) ? k : 1);
+        const minK = !this.isMain ? 0.45 : 0.15;
+        this.transform.k = Math.max(minK, Math.min(1.8, isFinite(k) ? k : 1));
         this.transform.x = w / 2 - midX * this.transform.k;
         this.transform.y = h / 2 - midY * this.transform.k;
         if (this.miniMap) this.miniMap.update();

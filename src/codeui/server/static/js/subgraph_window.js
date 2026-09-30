@@ -1,10 +1,5 @@
-/**
- * Multi-SubGraph Floating Windows Manager.
- * Supports multiple draggable, resizable, independent visualizer windows with code editor,
- * line numbers, error highlights, and bidirectional usage explorer.
- */
 class SubGraphWindow {
-    constructor(fileId, targetSymbolId = null, targetLine = null, targetMessage = "", initialOffset = 30) {
+    constructor(fileId, targetSymbolId = null, targetLine = null, targetMessage = "", initialOffset = 30, initialTab = "graph") {
         let clean = (fileId || "").replace(/^module::/, "").replace(/^\.\//, "").trim();
         let symId = targetSymbolId;
         if (clean.includes("::")) {
@@ -16,12 +11,14 @@ class SubGraphWindow {
         this.targetSymbolId = symId;
         this.targetLine = targetLine;
         this.targetMessage = targetMessage;
+        this.initialTab = initialTab;
         this.winId = `subgraph-win-${this.fileId.replace(/[^a-zA-Z0-9]/g, "_")}`;
         this.data = null;
         this.fileContent = "";
         this.canvasInstance = null;
         this.offset = initialOffset;
         this.showCrossUsage = false;
+        this.moveMode = false;
         this.createDOM();
         this.loadData();
     }
@@ -43,9 +40,9 @@ class SubGraphWindow {
 
         win.innerHTML = `
             <div class="subgraph-window-header" id="${this.winId}-header">
-                <div class="subgraph-window-title">
+                <div class="subgraph-window-title" title="${this.fileId}">
                     <span>📄</span>
-                    <span title="${this.fileId}">${filename}</span>
+                    <span class="subgraph-header-path" id="${this.winId}-header-path">${this.fileId}</span>
                 </div>
                 <div class="subgraph-nav">
                     <button class="subtab-btn active" onclick="SubGraphManager.switchTab('${this.fileId}', 'graph')">Symbols Graph</button>
@@ -53,42 +50,35 @@ class SubGraphWindow {
                     <button class="subtab-btn" onclick="SubGraphManager.switchTab('${this.fileId}', 'code')">Code Editor</button>
                 </div>
                 <div class="subgraph-window-actions">
-                    <button class="btn-move-window secondary" id="${this.winId}-move-btn" title="Drag to Reposition Window" style="cursor:grab; padding:2px 8px; font-weight:700;">✥ Move</button>
+                    <button class="btn-move-window secondary" id="${this.winId}-move-btn" onclick="SubGraphManager.toggleMoveMode('${this.fileId}')" title="Toggle Move Mode to Drag Window" style="cursor:pointer; padding:2px 8px; font-weight:700;">✥ Move</button>
                     <button class="secondary" onclick="SubGraphManager.minimizeWindow('${this.fileId}')">_</button>
                     <button class="secondary" onclick="SubGraphManager.maximizeWindow('${this.fileId}')">⛶</button>
                     <button class="danger" onclick="SubGraphManager.closeWindow('${this.fileId}')">✕</button>
                 </div>
             </div>
 
-            <!-- Panel 1: SubGraph Visualizer Canvas -->
-            <div class="subgraph-panel active" id="${this.winId}-panel-graph">
+            <div class="subgraph-panel active" id="${this.winId}-panel-graph" style="position:relative;">
+                <div class="subgraph-top-controls" style="position:absolute; top:8px; left:8px; z-index:15; display:flex; gap:6px; align-items:center;">
+                    <button class="secondary" id="${this.winId}-btn-cross" onclick="SubGraphManager.toggleCrossUsage('${this.fileId}')" title="Toggle Related & Cross Usages" style="font-size:0.7rem; padding:2px 7px; font-weight:600; background:var(--bg-surface); border:1px solid var(--border-subtle); backdrop-filter:blur(6px);">🌐 Cross</button>
+                    <button class="secondary" onclick="SubGraphManager.resetSubgraphCanvas('${this.fileId}')" title="Auto Fit View" style="font-size:0.7rem; padding:2px 7px; font-weight:600; background:var(--bg-surface); border:1px solid var(--border-subtle); backdrop-filter:blur(6px);">⛶ Fit</button>
+                </div>
                 <canvas id="${this.winId}-canvas"></canvas>
                 <div class="subgraph-canvas-bar">
                     <div class="subgraph-canvas-left">
                         <span id="${this.winId}-stat-symbols">0 symbols</span>
                     </div>
-                    <div class="subgraph-canvas-right">
-                        <label class="subgraph-toggle-label" id="${this.winId}-toggle-label" title="Toggle cross-file related symbols and usage dependencies to evaluate blast radius and impact">
-                            <input type="checkbox" id="${this.winId}-toggle-cross" onchange="SubGraphManager.toggleCrossUsage('${this.fileId}', this.checked)">
-                            <span>🌐 Related & Cross Usages</span>
-                        </label>
-                        <button class="secondary" style="padding:2px 8px; font-size:0.68rem;" onclick="SubGraphManager.resetSubgraphCanvas('${this.fileId}')">Fit View</button>
-                    </div>
                 </div>
             </div>
 
-            <!-- Panel 2: Usages Explorer -->
             <div class="subgraph-panel" id="${this.winId}-panel-usages">
                 <div class="usage-analysis-box" id="${this.winId}-usages-content">
                     <div style="color:var(--text-muted); text-align:center; padding:20px;">Analyzing incoming & outgoing references...</div>
                 </div>
             </div>
 
-            <!-- Panel 3: Code Editor -->
             <div class="subgraph-panel" id="${this.winId}-panel-code">
                 <div class="subgraph-editor-bar">
-                    <span style="font-size:0.7rem; color:var(--accent);" id="${this.winId}-editor-path">${this.fileId}</span>
-                    <div style="display:flex; align-items:center; gap:8px;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
                         <label class="subgraph-toggle-label" title="When enabled, saving writes directly to the project file on disk instead of in-memory override store">
                             <input type="checkbox" class="subgraph-toggle-disk-input" id="${this.winId}-toggle-disk" ${appState.directDiskWrite ? "checked" : ""} onchange="App.setDirectDiskEdit(this.checked)">
                             <span>💾 Direct Disk</span>
@@ -104,9 +94,6 @@ class SubGraphWindow {
                     <textarea class="subgraph-textarea" id="${this.winId}-textarea" spellcheck="false"></textarea>
                 </div>
             </div>
-
-            <!-- Resizer Handle Bottom-Right -->
-            <div class="subgraph-resize-handle" id="${this.winId}-resize-handle" title="Drag to Resize Window"></div>
         `;
 
         container.appendChild(win);
@@ -120,11 +107,12 @@ class SubGraphWindow {
         let startX, startY, origLeft, origTop;
 
         const onDragStart = e => {
+            if (!this.moveMode) return;
             if (e.target.closest("button") && e.target !== moveBtn) return;
             if (e.target.closest("select") || e.target.closest("input")) return;
             isDragging = true;
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const clientX = (e.touches && e.touches.length > 0) ? e.touches[0].clientX : (e.clientX ?? 0);
+            const clientY = (e.touches && e.touches.length > 0) ? e.touches[0].clientY : (e.clientY ?? 0);
             startX = clientX;
             startY = clientY;
             origLeft = win.offsetLeft;
@@ -135,8 +123,8 @@ class SubGraphWindow {
 
         const onDragMove = e => {
             if (!isDragging) return;
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const clientX = (e.touches && e.touches.length > 0) ? e.touches[0].clientX : (e.clientX ?? 0);
+            const clientY = (e.touches && e.touches.length > 0) ? e.touches[0].clientY : (e.clientY ?? 0);
             const dx = clientX - startX;
             const dy = clientY - startY;
             win.style.left = `${Math.max(0, origLeft + dx)}px`;
@@ -157,53 +145,6 @@ class SubGraphWindow {
         window.addEventListener("mouseup", onDragEnd);
         window.addEventListener("touchend", onDragEnd);
 
-        // Window Resizer Logic
-        const resizer = document.getElementById(`${this.winId}-resize-handle`);
-        let isResizing = false;
-        let initW, initH, startRX, startRY;
-
-        const onResizeStart = e => {
-            e.stopPropagation();
-            isResizing = true;
-            resizer.classList.add("active");
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-            startRX = clientX;
-            startRY = clientY;
-            initW = win.offsetWidth;
-            initH = win.offsetHeight;
-            win.style.zIndex = ++SubGraphManager.topZ;
-            document.body.style.userSelect = "none";
-        };
-
-        const onResizeMove = e => {
-            if (!isResizing) return;
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-            const newW = Math.max(300, initW + (clientX - startRX));
-            const newH = Math.max(200, initH + (clientY - startRY));
-            win.style.width = `${newW}px`;
-            win.style.height = `${newH}px`;
-            if (this.canvasInstance) {
-                this.canvasInstance.setupCanvas();
-            }
-        };
-
-        const onResizeEnd = () => {
-            if (isResizing) {
-                isResizing = false;
-                resizer.classList.remove("active");
-                document.body.style.userSelect = "";
-            }
-        };
-
-        resizer.addEventListener("mousedown", onResizeStart);
-        resizer.addEventListener("touchstart", onResizeStart, { passive: true });
-        window.addEventListener("mousemove", onResizeMove);
-        window.addEventListener("touchmove", onResizeMove, { passive: true });
-        window.addEventListener("mouseup", onResizeEnd);
-        window.addEventListener("touchend", onResizeEnd);
-
         win.addEventListener("mousedown", () => {
             win.style.zIndex = ++SubGraphManager.topZ;
         });
@@ -214,14 +155,51 @@ class SubGraphWindow {
             this.data = await CodeUIAPI.getSubGraph(this.fileId, this.targetSymbolId);
             const fileRes = await CodeUIAPI.getFile(this.fileId);
             this.fileContent = fileRes.content || "";
+            if (fileRes.path && fileRes.path !== this.fileId && !fileRes.is_external) {
+                const oldFileId = this.fileId;
+                this.fileId = fileRes.path;
+                appState.activeSubgraphs.set(this.fileId, this);
+                appState.activeSubgraphs.set(oldFileId, this);
+            }
+            if (fileRes.resolved_symbol) this.targetSymbolId = this.targetSymbolId || fileRes.resolved_symbol;
+            if (fileRes.target_line) this.targetLine = this.targetLine || fileRes.target_line;
+            const isReallyExternal = Boolean(fileRes.is_external && this.data?.is_external);
+            if (isReallyExternal) {
+                this.isExternal = true;
+                const pathEl = document.getElementById(`${this.winId}-header-path`);
+                if (pathEl) {
+                    pathEl.innerHTML = `<span class="badge shared" style="margin-right:6px; font-size:0.65rem;">🌐 External</span>${this.fileId}`;
+                }
+                const saveBtn = document.querySelector(`#${this.winId} button[onclick*="saveFile"]`);
+                if (saveBtn) {
+                    saveBtn.outerHTML = `<span class="badge shared" style="font-size:0.68rem; padding:2px 8px; font-weight:600;">ReadOnly</span>`;
+                }
+            }
             this.renderSymbolsGraph();
             this.renderUsages();
             this.renderEditor();
-            if (this.targetSymbolId || this.targetLine) {
+            if (this.initialTab === "code" || (this.targetLine && !this.targetSymbolId)) {
                 SubGraphManager.switchTab(this.fileId, "code");
-            }
-            if (this.targetLine) {
-                this.highlightError(this.targetLine, this.targetMessage);
+                if (this.targetSymbolId) {
+                    this.scrollToSymbol(this.targetSymbolId);
+                } else if (this.targetLine) {
+                    this.highlightError(this.targetLine, this.targetMessage);
+                }
+            } else {
+                SubGraphManager.switchTab(this.fileId, "graph");
+                if (this.targetSymbolId && this.canvasInstance) {
+                    const symName = this.targetSymbolId.split("::").pop();
+                    const symNode = (this.canvasInstance.nodes || []).find(n =>
+                        n.id === this.targetSymbolId || n.rawSymbol?.id === this.targetSymbolId || n.label === symName || n.id.endsWith("::" + symName)
+                    );
+                    if (symNode) {
+                        this.canvasInstance.selectedNodeId = symNode.id;
+                        this.canvasInstance.isolateNeighborhood(symNode.id);
+                        if (this.updateSymbolBar) {
+                            this.updateSymbolBar(symNode);
+                        }
+                    }
+                }
             }
         } catch (e) {
             App.showToast(`Error loading ${this.fileId}: ${e.message}`, "error");
@@ -232,23 +210,42 @@ class SubGraphWindow {
         const canvasId = `${this.winId}-canvas`;
         const canvasEl = document.getElementById(canvasId);
         if (!canvasEl) return;
-        if (this.canvasInstance) {
+        if (this.canvasInstance && this.canvasInstance.canvas !== canvasEl) {
             this.canvasInstance.destroy();
             this.canvasInstance = null;
         }
-        this.canvasInstance = new GraphCanvas(canvasId, false);
+        if (!this.canvasInstance) {
+            this.canvasInstance = new GraphCanvas(canvasId, false);
+        }
 
-        const localNodes = (this.data?.symbols || []).map(s => ({
-            id: s.id,
-            label: s.name,
-            kind: s.kind,
-            layer: this.data?.classification?.layer || "frontend",
-            feature: this.data?.classification?.feature || "subgraph",
-            radius: s.kind === "class" ? 10 : (s.kind === "function" ? 8 : 6),
-            rawSymbol: s,
-            isExternal: false,
-            fileId: this.fileId
-        }));
+        let localNodes = (this.data?.symbols || [])
+            .filter(s => s && s.kind !== "file")
+            .map(s => ({
+                id: s.id,
+                label: s.name,
+                kind: s.kind,
+                layer: this.data?.classification?.layer || "frontend",
+                feature: this.data?.classification?.feature || "subgraph",
+                radius: s.kind === "class" ? 14 : (s.kind === "function" ? 12 : 10),
+                rawSymbol: s,
+                isExternal: false,
+                fileId: this.fileId
+            }));
+
+        if (localNodes.length === 0) {
+            const fileName = this.fileId.split("/").pop();
+            localNodes.push({
+                id: this.fileId,
+                label: fileName,
+                kind: "file",
+                layer: this.data?.classification?.layer || "shared",
+                feature: this.data?.classification?.feature || "file",
+                radius: 14,
+                rawSymbol: { id: this.fileId, name: fileName, kind: "file" },
+                isExternal: false,
+                fileId: this.fileId
+            });
+        }
 
         const localSymIds = new Set(localNodes.map(n => n.id));
 
@@ -256,22 +253,37 @@ class SubGraphWindow {
         let displayLinks = [];
 
         if (this.showCrossUsage) {
-            const externalNodes = (this.data?.related_symbols || []).map(s => ({
-                id: s.id,
-                label: s.name || s.id.split("::").pop(),
-                kind: s.kind || "symbol",
-                layer: s.layer || "shared",
-                feature: s.feature || "external",
-                radius: s.kind === "class" ? 9 : (s.kind === "function" ? 7 : 6),
-                rawSymbol: s,
-                isExternal: true,
-                fileId: s.file_id || (s.id.includes("::") ? s.id.split("::")[0] : s.id)
-            }));
+            const rawExt = Array.isArray(this.data?.related_symbols) ? this.data.related_symbols : Object.values(this.data?.related_symbols || {});
+            const seenExtIds = new Set(localSymIds);
+            const externalNodes = [];
+            for (const s of rawExt) {
+                if (!s || !s.id || seenExtIds.has(s.id)) continue;
+                const fileForExt = s.file_id || s.location?.file_id || (s.id.includes("::") ? s.id.split("::")[0] : null);
+                if (!fileForExt || fileForExt.startsWith("module::")) continue;
+                if (fileForExt === this.fileId && s.kind !== "file") continue;
+                seenExtIds.add(s.id);
+                externalNodes.push({
+                    id: s.id,
+                    label: s.name || s.id.split("::").pop(),
+                    kind: s.kind || "symbol",
+                    layer: s.layer || "shared",
+                    feature: s.feature || "external",
+                    radius: s.kind === "class" ? 13 : (s.kind === "function" ? 11 : 9),
+                    rawSymbol: s,
+                    isExternal: true,
+                    fileId: fileForExt
+                });
+            }
             displayNodes = [...localNodes, ...externalNodes];
             const allNodeIds = new Set(displayNodes.map(n => n.id));
-            displayLinks = (this.data?.edges || []).filter(e => allNodeIds.has(e.source_id) && allNodeIds.has(e.target_id)).map(e => ({
-                source: e.source_id,
-                target: e.target_id,
+            const hasLocalFileNode = localNodes.some(n => n.id === this.fileId);
+            displayLinks = (this.data?.edges || []).filter(e => {
+                const srcMatch = allNodeIds.has(e.source_id) || (hasLocalFileNode && e.source_id === this.fileId);
+                const tgtMatch = allNodeIds.has(e.target_id) || (hasLocalFileNode && e.target_id === this.fileId);
+                return srcMatch && tgtMatch && e.source_id !== e.target_id;
+            }).map(e => ({
+                source: allNodeIds.has(e.source_id) ? e.source_id : this.fileId,
+                target: allNodeIds.has(e.target_id) ? e.target_id : this.fileId,
                 kind: e.kind,
                 weight: e.weight
             }));
@@ -285,6 +297,9 @@ class SubGraphWindow {
         }
 
         this.canvasInstance.setData(displayNodes, displayLinks);
+        setTimeout(() => {
+            if (this.canvasInstance) this.canvasInstance.fitToScreen();
+        }, 50);
 
         const updateSymbolBar = (node) => {
             const statEl = document.getElementById(`${this.winId}-stat-symbols`);
@@ -299,27 +314,28 @@ class SubGraphWindow {
                     const outgoingEdgesFromLocal = (this.data?.edges || []).filter(e => e.target_id === node.id && localSymIds.has(e.source_id));
                     let relInfo = "";
                     if (incomingEdgesToLocal.length > 0) {
-                        relInfo += `<span class="badge warning" style="font-size:0.65rem; background:rgba(234,179,8,0.2); color:#facc15;" title="Calls ${incomingEdgesToLocal.length} symbol(s) in this file">⚡ Calls this file (${incomingEdgesToLocal.length})</span> `;
+                        relInfo += `<span class="badge warning" style="font-size:0.65rem; background:rgba(234,179,8,0.2); color:var(--warning);" title="Calls ${incomingEdgesToLocal.length} symbol(s) in this file">⚡ Calls this file (${incomingEdgesToLocal.length})</span> `;
                     }
                     if (outgoingEdgesFromLocal.length > 0) {
                         relInfo += `<span class="badge shared" style="font-size:0.65rem;" title="Called by ${outgoingEdgesFromLocal.length} symbol(s) in this file">➡️ Called by this file (${outgoingEdgesFromLocal.length})</span> `;
                     }
                     statEl.innerHTML = `
-                        <span class="badge shared" style="background:#4338ca; color:#e0e7ff; font-weight:700;">🌐 External</span>
+                        <span class="badge shared" style="background:var(--accent); color:var(--bg-base); font-weight:700;">🌐 External</span>
                         <span style="font-weight:700; color:var(--text-main);">${node.label}</span>
                         <span style="font-size:0.68rem; color:var(--text-dim);" title="${node.fileId}">(${node.fileId ? node.fileId.split('/').pop() : 'other file'})</span>
                         ${relInfo}
-                        <button class="secondary" style="padding:2px 8px; font-size:0.68rem; margin-left:6px; font-weight:600;" onclick="SubGraphManager.openWindow('${safeFile}', '${safeId}')">📂 Open ${node.fileId ? node.fileId.split('/').pop() : 'File'}</button>
+                        <button class="secondary" style="padding:2px 8px; font-size:0.68rem; margin-left:6px; font-weight:600;" onclick="SubGraphManager.openWindow('${safeFile}', '${safeId}', null, '', 'graph')">📂 Open ${node.fileId ? node.fileId.split('/').pop() : 'File'}</button>
+                        <button class="success" style="padding:2px 8px; font-size:0.68rem; margin-left:6px; font-weight:600;" onclick="SubGraphManager.openWindow('${safeFile}', '${safeId}', null, '', 'code')">✏️ Edit Symbol</button>
                     `;
                 } else {
                     const affectedCallers = (this.data?.edges || []).filter(e => e.target_id === node.id && !localSymIds.has(e.source_id));
                     const outgoingCalls = (this.data?.edges || []).filter(e => e.source_id === node.id && !localSymIds.has(e.target_id));
                     let impactBadge = "";
                     if (affectedCallers.length > 0) {
-                        impactBadge = `<span class="badge warning" style="margin-left:6px; font-size:0.68rem; background:rgba(234,179,8,0.2); color:#facc15; border:1px solid rgba(234,179,8,0.4);" title="Modifying this symbol may affect ${affectedCallers.length} external caller node(s) across other files">⚠️ ${affectedCallers.length} external caller(s) affected</span>`;
+                        impactBadge = `<span class="badge warning" style="margin-left:6px; font-size:0.68rem; background:rgba(234,179,8,0.2); color:var(--warning); border:1px solid rgba(234,179,8,0.4);" title="Modifying this symbol may affect ${affectedCallers.length} external caller node(s)">⚠️ ${affectedCallers.length} external caller(s) affected</span>`;
                     }
                     if (outgoingCalls.length > 0) {
-                        impactBadge += ` <span class="badge shared" style="margin-left:4px; font-size:0.68rem;" title="Calls ${outgoingCalls.length} external dependency(ies)">➡️ ${outgoingCalls.length} ext calls</span>`;
+                        impactBadge += ` <span class="badge shared" style="margin-left:4px; font-size:0.68rem;" title="Calls ${outgoingCalls.length} external dependencies">➡️ ${outgoingCalls.length} ext calls</span>`;
                     }
                     statEl.innerHTML = `
                         <span style="font-weight:700; color:var(--text-main);">${node.label}</span>
@@ -331,7 +347,7 @@ class SubGraphWindow {
             } else {
                 const extCount = (this.data?.related_symbols || []).length;
                 if (this.showCrossUsage && extCount > 0) {
-                    statEl.innerHTML = `<span>${localNodes.length} local symbols, <span style="color:#a855f7; font-weight:600;">+${extCount} cross-file impact nodes</span> (${displayLinks.length} total edges)</span>`;
+                    statEl.innerHTML = `<span>${localNodes.length} local symbols, <span style="color:var(--purple, var(--accent)); font-weight:600;">+${extCount} cross-file impact nodes</span> (${displayLinks.length} total edges)</span>`;
                 } else {
                     const availableCross = (this.data?.related_symbols || []).length;
                     const crossHint = availableCross > 0 ? ` <span style="color:var(--text-dim); font-size:0.65rem;">(${availableCross} cross-file nodes available)</span>` : "";
@@ -340,16 +356,41 @@ class SubGraphWindow {
             }
         };
 
+        this.updateSymbolBar = updateSymbolBar;
+
+        let initialFocusNode = null;
+        if (this.targetSymbolId) {
+            const symName = this.targetSymbolId.split("::").pop();
+            initialFocusNode = displayNodes.find(n =>
+                n.id === this.targetSymbolId ||
+                n.rawSymbol?.id === this.targetSymbolId ||
+                n.label === symName ||
+                n.id.endsWith("::" + symName)
+            );
+        }
+        if (initialFocusNode) {
+            this.canvasInstance.selectedNodeId = initialFocusNode.id;
+            this.canvasInstance.isolateNeighborhood(initialFocusNode.id);
+            updateSymbolBar(initialFocusNode);
+        } else {
+            updateSymbolBar(null);
+        }
+
         this.canvasInstance.onNodeSelected = (node) => {
-            if (!node.isExternal) {
-                this.targetSymbolId = node.id;
-            }
+            this.targetSymbolId = node.id;
+            this.canvasInstance.selectedNodeId = node.id;
+            this.canvasInstance.isolateNeighborhood(node.id);
             updateSymbolBar(node);
+            this.renderUsages();
+
+            if (!node.isExternal) {
+                this.scrollToSymbol(node.id);
+            }
         };
 
         this.canvasInstance.onNodeDoubleClick = (node) => {
             if (node.isExternal) {
-                SubGraphManager.openWindow(node.fileId, node.id);
+                SubGraphManager.openWindow(node.fileId, node.id, null, "", "graph");
             } else {
                 this.targetSymbolId = node.id;
                 SubGraphManager.editSymbol(this.fileId, node.id);
@@ -358,35 +399,74 @@ class SubGraphWindow {
 
         this.canvasInstance.onEmptyCanvasClick = () => {
             this.targetSymbolId = null;
+            this.canvasInstance.selectedNodeId = null;
+            this.canvasInstance.clearNeighborhoodIsolation();
             updateSymbolBar(null);
+            this.renderUsages();
         };
-
-        updateSymbolBar(null);
     }
 
     renderUsages() {
         const container = document.getElementById(`${this.winId}-usages-content`);
         if (!container) return;
 
-        const extIncoming = (this.data.edges || []).filter(e => e.source_id.split("::")[0] !== this.fileId);
-        const extOutgoing = (this.data.edges || []).filter(e => e.target_id.split("::")[0] !== this.fileId);
+        const allEdges = this.data?.edges || [];
+        const selectedSymId = this.targetSymbolId;
+        const selectedSymName = selectedSymId ? selectedSymId.replace("module::", "").split("::").pop() : "";
+
+        const matchesTarget = (edgeEndpoint, targetId) => {
+            if (!targetId || !edgeEndpoint) return false;
+            if (edgeEndpoint === targetId) return true;
+            const cleanEdge = edgeEndpoint.replace(/^module::/, "");
+            const cleanTarget = targetId.replace(/^module::/, "");
+            if (cleanEdge === cleanTarget) return true;
+            if (cleanTarget.includes("::") && cleanEdge.includes("::")) {
+                const [targetFile, targetScope] = cleanTarget.split("::");
+                const [edgeFile, edgeScope] = cleanEdge.split("::");
+                const fileMatches = targetFile === edgeFile || targetFile.endsWith("/" + edgeFile) || edgeFile.endsWith("/" + targetFile);
+                return fileMatches && targetScope === edgeScope;
+            }
+            return false;
+        };
+
+        let extIncoming = [];
+        let extOutgoing = [];
+
+        if (selectedSymId) {
+            extIncoming = allEdges.filter(e => matchesTarget(e.target_id, selectedSymId) && !matchesTarget(e.source_id, selectedSymId));
+            extOutgoing = allEdges.filter(e => matchesTarget(e.source_id, selectedSymId) && !matchesTarget(e.target_id, selectedSymId));
+        } else {
+            extIncoming = allEdges.filter(e => e.source_id.split("::")[0] !== this.fileId);
+            extOutgoing = allEdges.filter(e => e.target_id.split("::")[0] !== this.fileId);
+        }
 
         let html = "";
 
-        // Incoming Dependencies
+        if (selectedSymId) {
+            html += `
+                <div class="usage-active-filter" style="display:flex; justify-content:space-between; align-items:center; background:var(--bg-elevated); padding:6px 10px; border-radius:6px; margin-bottom:8px; border:1px solid var(--accent); font-size:0.72rem;">
+                    <div style="display:flex; align-items:center; gap:6px;">
+                        <span class="badge shared" style="font-size:0.65rem;">Symbol Filter</span>
+                        <span style="font-weight:700; color:var(--text-main); font-size:0.75rem;">${selectedSymName}</span>
+                    </div>
+                    <button class="secondary" style="padding:2px 8px; font-size:0.68rem;" onclick="SubGraphManager.clearSymbolFilter('${this.fileId}')">View All File Usages</button>
+                </div>
+            `;
+        }
+
         html += `<div class="usage-card">
             <div class="usage-card-title">
-                <span>Incoming References (Called By)</span>
+                <span>${selectedSymId ? `Incoming References to ${selectedSymName}` : "Incoming References (Called By)"}</span>
                 <span class="badge shared">${extIncoming.length}</span>
             </div>`;
         if (extIncoming.length === 0) {
-            html += `<div style="font-size:0.72rem; color:var(--text-dim); padding:4px;">No external files call this module.</div>`;
+            html += `<div style="font-size:0.72rem; color:var(--text-dim); padding:4px;">${selectedSymId ? `No external callers found for '${selectedSymName}'.` : "No external files call this module."}</div>`;
         } else {
             extIncoming.forEach(e => {
                 const srcFile = e.source_id.split("::")[0];
                 const srcName = e.source_id.split("::")[1] || srcFile;
                 html += `
-                    <div class="usage-item" onclick="SubGraphManager.openWindow('${srcFile}')">
+                    <div class="usage-item" onclick="SubGraphManager.openWindow('${srcFile}', '${e.source_id}')">
                         <div>
                             <div style="font-weight:600; color:var(--text-main);">${srcName}</div>
                             <div style="font-size:0.65rem; color:var(--text-dim);">${srcFile}</div>
@@ -398,21 +478,20 @@ class SubGraphWindow {
         }
         html += `</div>`;
 
-        // Outgoing Dependencies
         html += `<div class="usage-card" style="margin-top:8px;">
             <div class="usage-card-title">
-                <span>Outgoing Calls (Depends On)</span>
+                <span>${selectedSymId ? `Outgoing Calls from ${selectedSymName}` : "Outgoing Calls (Depends On)"}</span>
                 <span class="badge backend">${extOutgoing.length}</span>
             </div>`;
         if (extOutgoing.length === 0) {
-            html += `<div style="font-size:0.72rem; color:var(--text-dim); padding:4px;">No external calls from this module.</div>`;
+            html += `<div style="font-size:0.72rem; color:var(--text-dim); padding:4px;">${selectedSymId ? `No outgoing calls found for '${selectedSymName}'.` : "No external calls from this module."}</div>`;
         } else {
             extOutgoing.forEach(e => {
                 const tgtRaw = e.target_id.replace("module::", "");
                 const tgtFile = tgtRaw.split("::")[0];
                 const tgtName = tgtRaw.split("::")[1] || tgtRaw;
                 html += `
-                    <div class="usage-item" onclick="SubGraphManager.openWindow('${tgtFile}')">
+                    <div class="usage-item" onclick="SubGraphManager.openWindow('${tgtFile}', '${e.target_id}')">
                         <div>
                             <div style="font-weight:600; color:var(--text-main);">${tgtName}</div>
                             <div style="font-size:0.65rem; color:var(--text-dim);">${tgtFile}</div>
@@ -458,59 +537,124 @@ class SubGraphWindow {
         lineNums.innerHTML = Array.from({ length: count }, (_, i) => i + 1).join("<br>");
     }
 
+    getLineHeight() {
+        const textarea = document.getElementById(`${this.winId}-textarea`);
+        if (textarea) {
+            const computed = window.getComputedStyle(textarea);
+            const lh = parseFloat(computed.lineHeight);
+            if (lh && !isNaN(lh) && lh > 0) return lh;
+        }
+        return 20;
+    }
+
     scrollToSymbol(symbolId) {
         const textarea = document.getElementById(`${this.winId}-textarea`);
         const lineNums = document.getElementById(`${this.winId}-line-numbers`);
         if (!textarea) return;
 
-        const symName = (symbolId || "").split("::").pop();
-        let sym = (this.data?.symbols || []).find(s =>
-            s.id === symbolId || s.name === symbolId || s.qualified_name === symbolId ||
-            s.id.endsWith("::" + symName) || s.name === symName
-        );
+        const cleanSymId = (symbolId || "").replace(/^module::/, "").trim();
+        const symName = cleanSymId.split("::").pop();
+        const shortName = symName && symName.includes(".") ? symName.split(".").pop() : (symName || "");
+
+        let sym = null;
+        if (this.canvasInstance?.nodes) {
+            const foundNode = this.canvasInstance.nodes.find(n =>
+                n.id === symbolId || n.id === cleanSymId ||
+                n.rawSymbol?.id === symbolId || n.rawSymbol?.id === cleanSymId ||
+                n.label === symName || n.label === shortName
+            );
+            if (foundNode && foundNode.rawSymbol && foundNode.rawSymbol.location) {
+                sym = foundNode.rawSymbol;
+            }
+        }
+
+        if (!sym && this.data?.symbols) {
+            sym = this.data.symbols.find(s =>
+                s.id === symbolId || s.id === cleanSymId ||
+                s.name === symName || s.name === shortName ||
+                s.qualified_name === symbolId || s.qualified_name === cleanSymId ||
+                (symName && s.id.endsWith("::" + symName)) || (shortName && s.id.endsWith("::" + shortName))
+            );
+        }
+
+        if (!sym && window.appState?.rawGraph?.symbols) {
+            sym = window.appState.rawGraph.symbols.find(s =>
+                (s.location?.file_id === this.fileId || s.id.startsWith(this.fileId + "::")) &&
+                (s.id === symbolId || s.name === symName || s.name === shortName || (symName && s.id.endsWith("::" + symName)))
+            );
+        }
 
         let startLine = sym?.location?.start_line;
         let endLine = sym?.location?.end_line || startLine;
 
-        // Fallback: search source content if symbol location wasn't provided in metadata
-        if ((!startLine || startLine <= 0) && textarea.value && symName) {
+        if ((!startLine || startLine <= 0) && textarea.value && shortName) {
             const lines = textarea.value.split("\n");
+            const defRegex = new RegExp(`(^|\\s)(class|def|function|const|let|var|type|interface)\\s+${shortName}\\b`);
             for (let i = 0; i < lines.length; i++) {
-                const l = lines[i];
-                if (l.includes(`def ${symName}`) || l.includes(`class ${symName}`) || l.includes(`function ${symName}`) || l.includes(`const ${symName}`) || l.includes(symName)) {
+                if (defRegex.test(lines[i])) {
                     startLine = i + 1;
                     endLine = startLine + 10;
                     break;
                 }
             }
+            if (!startLine) {
+                const wordRegex = new RegExp(`\\b${shortName}\\b`);
+                for (let i = 0; i < lines.length; i++) {
+                    if (wordRegex.test(lines[i])) {
+                        startLine = i + 1;
+                        endLine = startLine + 5;
+                        break;
+                    }
+                }
+            }
         }
 
         if (startLine && startLine > 0) {
-            const lineHeight = 20;
-            const targetY = (startLine - 1) * lineHeight;
+            this.targetLine = startLine;
+            this.targetEndLine = endLine || startLine;
+            this.targetSymbolId = symbolId;
 
-            textarea.scrollTop = Math.max(0, targetY - 40);
-            if (lineNums) lineNums.scrollTop = textarea.scrollTop;
+            const applyScrollAndHighlight = () => {
+                const lineHeight = this.getLineHeight();
+                const targetY = (startLine - 1) * lineHeight;
 
-            const highlight = document.getElementById(`${this.winId}-symbol-highlight`);
-            if (highlight) {
-                highlight.style.display = "block";
-                const numLines = Math.max(1, (endLine || startLine) - startLine + 1);
-                highlight.style.top = `${targetY - textarea.scrollTop + 8}px`;
-                highlight.style.height = `${numLines * lineHeight}px`;
-                highlight.title = `${sym?.signature || symName} (Lines ${startLine}-${endLine || startLine})`;
-                highlight.innerHTML = `<span class="symbol-highlight-badge">⚡ ${sym?.name || symName} (L${startLine}-${endLine || startLine})</span>`;
-            }
+                textarea.scrollTop = Math.max(0, targetY - 40);
+                if (lineNums) lineNums.scrollTop = textarea.scrollTop;
 
-            const lines = textarea.value.split("\n");
-            let charStart = 0;
-            for (let i = 0; i < startLine - 1 && i < lines.length; i++) {
-                charStart += lines[i].length + 1;
-            }
-            try {
-                textarea.focus();
-                textarea.setSelectionRange(charStart, charStart);
-            } catch (_) {}
+                const highlight = document.getElementById(`${this.winId}-symbol-highlight`);
+                if (highlight) {
+                    highlight.style.display = "block";
+                    const numLines = Math.max(1, (endLine || startLine) - startLine + 1);
+                    highlight.style.top = `${targetY - textarea.scrollTop + 8}px`;
+                    highlight.style.height = `${numLines * lineHeight}px`;
+                    highlight.title = `${sym?.signature || shortName} (Lines ${startLine}-${endLine || startLine})`;
+                    highlight.innerHTML = `<span class="symbol-highlight-badge">⚡ ${sym?.name || shortName} (L${startLine}-${endLine || startLine})</span>`;
+                }
+
+                const lines = textarea.value.split("\n");
+                let charStart = 0;
+                for (let i = 0; i < startLine - 1 && i < lines.length; i++) {
+                    charStart += lines[i].length + 1;
+                }
+                let charEnd = charStart;
+                for (let i = startLine - 1; i < (endLine || startLine) && i < lines.length; i++) {
+                    charEnd += lines[i].length + 1;
+                }
+
+                try {
+                    textarea.setSelectionRange(charStart, charStart);
+                } catch (_) {}
+
+                textarea.scrollTop = Math.max(0, targetY - 40);
+                if (lineNums) lineNums.scrollTop = textarea.scrollTop;
+                if (highlight) {
+                    highlight.style.top = `${targetY - textarea.scrollTop + 8}px`;
+                }
+            };
+
+            applyScrollAndHighlight();
+            requestAnimationFrame(() => applyScrollAndHighlight());
+            setTimeout(() => applyScrollAndHighlight(), 50);
         }
     }
 
@@ -518,61 +662,234 @@ class SubGraphWindow {
         const textarea = document.getElementById(`${this.winId}-textarea`);
         const lineNums = document.getElementById(`${this.winId}-line-numbers`);
         if (!textarea) return;
-        const lineHeight = 20;
-        const targetY = (lineNumber - 1) * lineHeight;
-        textarea.scrollTop = Math.max(0, targetY - 40);
-        if (lineNums) lineNums.scrollTop = textarea.scrollTop;
+        this.targetErrorLine = lineNumber;
 
-        const errHighlight = document.getElementById(`${this.winId}-error-highlight`);
-        if (errHighlight) {
-            errHighlight.style.display = "block";
-            errHighlight.style.top = `${targetY - textarea.scrollTop + 8}px`;
-            errHighlight.style.height = `${lineHeight}px`;
-            errHighlight.title = message;
-        }
+        const applyErrorScroll = () => {
+            const lineHeight = this.getLineHeight();
+            const targetY = (lineNumber - 1) * lineHeight;
+            textarea.scrollTop = Math.max(0, targetY - 40);
+            if (lineNums) lineNums.scrollTop = textarea.scrollTop;
 
-        const lines = textarea.value.split("\n");
-        let charStart = 0;
-        for (let i = 0; i < lineNumber - 1 && i < lines.length; i++) {
-            charStart += lines[i].length + 1;
-        }
-        try {
-            textarea.focus();
-            textarea.setSelectionRange(charStart, charStart);
-        } catch (_) {}
+            const errHighlight = document.getElementById(`${this.winId}-error-highlight`);
+            if (errHighlight) {
+                errHighlight.style.display = "block";
+                errHighlight.style.top = `${targetY - textarea.scrollTop + 8}px`;
+                errHighlight.style.height = `${lineHeight}px`;
+                errHighlight.title = message;
+                if (message) {
+                    errHighlight.innerHTML = `<span class="error-badge" style="position:absolute; right:8px; top:1px; font-size:0.68rem; background:rgba(239,68,68,0.25); border:1px solid #ef4444; color:#f87171; padding:0 6px; border-radius:3px; pointer-events:none; white-space:nowrap; z-index:5;">🚨 L${lineNumber}: ${message}</span>`;
+                } else {
+                    errHighlight.innerHTML = "";
+                }
+            }
+
+            const lines = textarea.value.split("\n");
+            let charStart = 0;
+            for (let i = 0; i < lineNumber - 1 && i < lines.length; i++) {
+                charStart += lines[i].length + 1;
+            }
+
+            try {
+                textarea.setSelectionRange(charStart, charStart);
+            } catch (_) {}
+
+            textarea.scrollTop = Math.max(0, targetY - 40);
+            if (lineNums) lineNums.scrollTop = textarea.scrollTop;
+            if (errHighlight) {
+                errHighlight.style.top = `${targetY - textarea.scrollTop + 8}px`;
+            }
+        };
+
+        applyErrorScroll();
+        requestAnimationFrame(() => applyErrorScroll());
+        setTimeout(() => applyErrorScroll(), 50);
     }
 
     updateHighlights() {
         const textarea = document.getElementById(`${this.winId}-textarea`);
         const highlight = document.getElementById(`${this.winId}-symbol-highlight`);
         const errHighlight = document.getElementById(`${this.winId}-error-highlight`);
-        const lineHeight = 20;
+        if (!textarea) return;
+        const lineHeight = this.getLineHeight();
 
-        if (highlight && highlight.style.display !== "none" && this.targetSymbolId && this.data) {
-            const symName = this.targetSymbolId.split("::").pop();
-            const sym = (this.data.symbols || []).find(s =>
-                s.id === this.targetSymbolId || s.name === this.targetSymbolId || s.qualified_name === this.targetSymbolId ||
-                s.id.endsWith("::" + symName) || s.name === symName
-            );
-            if (sym && sym.location) {
-                const targetY = (sym.location.start_line - 1) * lineHeight;
+        if (highlight && highlight.style.display !== "none" && (this.targetLine || this.targetSymbolId)) {
+            let startLine = this.targetLine;
+            let endLine = this.targetEndLine || startLine;
+            if (!startLine && this.targetSymbolId && this.data) {
+                const symName = this.targetSymbolId.split("::").pop();
+                const sym = (this.data.symbols || []).find(s =>
+                    s.id === this.targetSymbolId || s.name === this.targetSymbolId || s.qualified_name === this.targetSymbolId ||
+                    (symName && s.id.endsWith("::" + symName)) || s.name === symName
+                );
+                if (sym?.location?.start_line) {
+                    startLine = sym.location.start_line;
+                    endLine = sym.location.end_line || startLine;
+                }
+            }
+            if (startLine && startLine > 0) {
+                const targetY = (startLine - 1) * lineHeight;
                 highlight.style.top = `${targetY - textarea.scrollTop + 8}px`;
+                highlight.style.height = `${Math.max(1, (endLine || startLine) - startLine + 1) * lineHeight}px`;
             }
         }
-        if (errHighlight && errHighlight.style.display !== "none" && this.targetLine) {
-            const targetY = (this.targetLine - 1) * lineHeight;
+
+        if (errHighlight && errHighlight.style.display !== "none" && this.targetErrorLine) {
+            const targetY = (this.targetErrorLine - 1) * lineHeight;
             errHighlight.style.top = `${targetY - textarea.scrollTop + 8}px`;
         }
     }
 }
 
-/**
- * Manager coordinating multiple floating SubGraph visualizer windows.
- */
 class SubGraphManager {
-    static topZ = 30;
+    static topZ = 300;
 
-    static openWindow(fileId, symbolId = null, line = null, message = "") {
+    static getWindow(fileId) {
+        if (!fileId) return null;
+        const norm = fileId.replace(/\\/g, "/").trim();
+        let win = appState.activeSubgraphs.get(norm) || appState.activeSubgraphs.get(fileId);
+        if (win) return win;
+        for (const [k, v] of appState.activeSubgraphs.entries()) {
+            if (v.fileId === fileId || v.fileId === norm ||
+                k.endsWith(norm) || norm.endsWith(k) ||
+                k.endsWith(fileId) || fileId.endsWith(k) ||
+                (v.fileId && (v.fileId.endsWith("/" + norm) || norm.endsWith("/" + v.fileId)))) {
+                return v;
+            }
+        }
+        return null;
+    }
+
+    static updateBackgroundInteractivity() {
+        let hasActiveWindow = false;
+        appState.activeSubgraphs.forEach(win => {
+            if (!win || !win.winId) return;
+            const dom = document.getElementById(win.winId);
+            if (dom && dom.style.display !== "none" && !dom.classList.contains("minimized")) {
+                hasActiveWindow = true;
+            }
+        });
+
+        const mainCanvasEl = document.getElementById("graph-canvas");
+        if (mainCanvasEl) {
+            if (hasActiveWindow) {
+                mainCanvasEl.classList.add("background-inert");
+            } else {
+                mainCanvasEl.classList.remove("background-inert");
+            }
+        }
+        if (window.mainCanvas) {
+            window.mainCanvas.isInteractive = !hasActiveWindow;
+        }
+    }
+
+    static clearSymbolFilter(fileId) {
+        const win = this.getWindow(fileId);
+        if (!win) return;
+        win.targetSymbolId = null;
+        if (win.canvasInstance) {
+            win.canvasInstance.selectedNodeId = null;
+            win.canvasInstance.clearNeighborhoodIsolation();
+        }
+        if (win.updateSymbolBar) {
+            win.updateSymbolBar(null);
+        }
+        win.renderUsages();
+    }
+
+    static toggleMoveMode(fileId) {
+        const win = this.getWindow(fileId);
+        if (!win) return;
+        win.moveMode = !win.moveMode;
+        const btn = document.getElementById(`${win.winId}-move-btn`);
+        const header = document.getElementById(`${win.winId}-header`);
+        if (btn) {
+            btn.classList.toggle("active", win.moveMode);
+            btn.classList.toggle("primary", win.moveMode);
+        }
+        if (header) {
+            header.style.cursor = win.moveMode ? "move" : "default";
+        }
+    }
+
+    static tileWindows() {
+        const activeWins = [];
+        const seenDomIds = new Set();
+
+        appState.activeSubgraphs.forEach((win) => {
+            if (win && win.winId && !seenDomIds.has(win.winId)) {
+                seenDomIds.add(win.winId);
+                const dom = document.getElementById(win.winId);
+                if (dom && dom.style.display !== "none" && !dom.classList.contains("minimized") && !dom.classList.contains("maximized")) {
+                    activeWins.push(win);
+                }
+            }
+        });
+
+        const count = activeWins.length;
+        if (count === 0) return;
+
+        const container = document.getElementById("canvas-container") || document.body;
+        const containerW = container.clientWidth || window.innerWidth || 1000;
+        const containerH = container.clientHeight || window.innerHeight || 700;
+
+        const margin = 20;
+        const gap = 16;
+        const availW = Math.max(320, containerW - (margin * 2));
+        const availH = Math.max(240, containerH - (margin * 2));
+
+        let cols = 1;
+        let rows = 1;
+
+        if (count === 1) {
+            cols = 1; rows = 1;
+        } else if (count === 2) {
+            if (availW >= 550) {
+                cols = 2; rows = 1;
+            } else {
+                cols = 1; rows = 2;
+            }
+        } else if (count <= 4) {
+            cols = 2; rows = 2;
+        } else if (count <= 6) {
+            cols = 3; rows = 2;
+        } else {
+            cols = Math.ceil(Math.sqrt(count));
+            rows = Math.ceil(count / cols);
+        }
+
+        const winWidth = (count === 1)
+            ? Math.min(640, availW)
+            : Math.max(300, Math.floor((availW - (gap * (cols - 1))) / cols));
+
+        const winHeight = (count === 1)
+            ? Math.min(500, availH)
+            : Math.max(240, Math.floor((availH - (gap * (rows - 1))) / rows));
+
+        activeWins.forEach((win, index) => {
+            const r = Math.floor(index / cols);
+            const c = index % cols;
+            const left = margin + c * (winWidth + gap);
+            const top = margin + r * (winHeight + gap);
+
+            const dom = document.getElementById(win.winId);
+            if (dom) {
+                dom.style.left = `${left}px`;
+                dom.style.top = `${top}px`;
+                dom.style.width = `${winWidth}px`;
+                dom.style.height = `${winHeight}px`;
+                if (win.canvasInstance) {
+                    setTimeout(() => {
+                        if (win.canvasInstance) {
+                            win.canvasInstance.setupCanvas();
+                            win.canvasInstance.fitToScreen();
+                        }
+                    }, 50);
+                }
+            }
+        });
+    }
+
+    static openWindow(fileId, symbolId = null, line = null, message = "", initialTab = "graph") {
         if (!fileId) return;
         let clean = (fileId || "").replace(/^module::/, "").replace(/^\.\//, "").trim();
         let symId = symbolId;
@@ -581,6 +898,29 @@ class SubGraphManager {
             clean = parts[0];
             if (!symId) symId = fileId;
         }
+
+        const rawGraph = appState.rawGraph || {};
+        const symList = rawGraph.symbols || [];
+        const filesList = rawGraph.files || [];
+
+        const symName = symId ? symId.split("::").pop().split(".").pop() : clean.split("::").pop().split(".").pop();
+        const matched = symList.find(s =>
+            s.id === clean || s.name === clean || s.qualified_name === clean ||
+            (symId && (s.id === symId || s.name === symId || s.qualified_name === symId || s.name === symName || s.id.endsWith("::" + symName)))
+        );
+        if (matched && matched.location && matched.location.file_id) {
+            clean = matched.location.file_id;
+            if (!symId) symId = matched.id;
+            if (!line && matched.location.start_line) line = matched.location.start_line;
+        } else {
+            let matchedFile = filesList.find(f =>
+                f === clean || f.endsWith("/" + clean) || f.replace(/\.[^/.]+$/, "") === clean || f.endsWith("/" + clean + ".py") || f.endsWith("/" + clean + ".ts") || f.endsWith("/" + clean + ".js")
+            );
+            if (matchedFile) {
+                clean = matchedFile;
+            }
+        }
+
         const normFileId = clean;
         const winDomId = `subgraph-win-${normFileId.replace(/[^a-zA-Z0-9]/g, "_")}`;
 
@@ -604,44 +944,78 @@ class SubGraphManager {
             if (win) {
                 if (symId) {
                     win.targetSymbolId = symId;
-                    this.switchTab(normFileId, "code");
-                    win.scrollToSymbol(symId);
-                } else if (line) {
+                }
+                if (line) {
                     win.targetLine = line;
                     win.targetMessage = message;
+                }
+                if (initialTab === "code" || (line && !symId)) {
                     this.switchTab(normFileId, "code");
-                    win.highlightError(line, message);
+                    if (symId) {
+                        win.scrollToSymbol(symId);
+                    } else if (line) {
+                        win.highlightError(line, message);
+                    }
+                } else {
+                    this.switchTab(normFileId, "graph");
+                    if (symId && win.canvasInstance) {
+                        const symName = symId.split("::").pop();
+                        const symNode = (win.canvasInstance.nodes || []).find(n =>
+                            n.id === symId || n.rawSymbol?.id === symId || n.label === symName || n.id.endsWith("::" + symName)
+                        );
+                        if (symNode) {
+                            win.canvasInstance.selectedNodeId = symNode.id;
+                            win.canvasInstance.isolateNeighborhood(symNode.id);
+                            if (win.updateSymbolBar) {
+                                win.updateSymbolBar(symNode);
+                            }
+                        }
+                    }
                 }
             }
+            this.tileWindows();
             this.updateTaskbar();
             return;
         }
 
-        const newWin = new SubGraphWindow(normFileId, symId, line, message, appState.nextWindowOffset);
+        const newWin = new SubGraphWindow(normFileId, symId, line, message, appState.nextWindowOffset, initialTab);
         appState.nextWindowOffset = (appState.nextWindowOffset + 35) % 250 + 20;
         appState.activeSubgraphs.set(normFileId, newWin);
+        this.tileWindows();
         this.updateTaskbar();
+        this.updateBackgroundInteractivity();
     }
 
     static closeWindow(fileId) {
         if (!fileId) return;
         const normFileId = fileId.replace(/^module::/, "").replace(/^\.\//, "").trim();
-        const win = appState.activeSubgraphs.get(normFileId) || appState.activeSubgraphs.get(fileId);
-        if (win) {
-            if (win.canvasInstance) {
-                win.canvasInstance.destroy();
-                win.canvasInstance = null;
+        let winToDelete = null;
+        const keysToDelete = [];
+
+        appState.activeSubgraphs.forEach((win, key) => {
+            if (win.fileId === normFileId || win.fileId === fileId || key === normFileId || key === fileId || key.endsWith(normFileId)) {
+                winToDelete = win;
+                keysToDelete.push(key);
             }
-            const dom = document.getElementById(win.winId);
+        });
+
+        if (winToDelete) {
+            if (winToDelete.canvasInstance) {
+                winToDelete.canvasInstance.destroy();
+                winToDelete.canvasInstance = null;
+            }
+            const dom = document.getElementById(winToDelete.winId);
             if (dom) dom.remove();
-            appState.activeSubgraphs.delete(normFileId);
-            appState.activeSubgraphs.delete(fileId);
+            keysToDelete.forEach(k => appState.activeSubgraphs.delete(k));
         } else {
             const winDomId = `subgraph-win-${normFileId.replace(/[^a-zA-Z0-9]/g, "_")}`;
             const dom = document.getElementById(winDomId);
             if (dom) dom.remove();
         }
+
+        this.tileWindows();
         this.updateTaskbar();
+        this.updateBackgroundInteractivity();
     }
 
     static minimizeWindow(fileId) {
@@ -651,7 +1025,9 @@ class SubGraphManager {
         if (win) {
             const dom = document.getElementById(win.winId);
             if (dom) dom.classList.add("minimized");
+            this.tileWindows();
             this.updateTaskbar();
+            this.updateBackgroundInteractivity();
         }
     }
 
@@ -672,15 +1048,15 @@ class SubGraphManager {
     }
 
     static editSymbol(fileId, symbolId) {
-        const win = appState.activeSubgraphs.get(fileId);
+        const win = this.getWindow(fileId);
         if (!win) return;
         win.targetSymbolId = symbolId;
         this.switchTab(fileId, "code");
-        setTimeout(() => win.scrollToSymbol(symbolId), 40);
+        win.scrollToSymbol(symbolId);
     }
 
     static switchTab(fileId, tabName) {
-        const win = appState.activeSubgraphs.get(fileId);
+        const win = this.getWindow(fileId);
         if (!win) return;
         const dom = document.getElementById(win.winId);
         if (!dom) return;
@@ -696,45 +1072,60 @@ class SubGraphManager {
         if (tabName === "graph" && win.canvasInstance) {
             win.canvasInstance.setupCanvas();
             win.canvasInstance.fitToScreen();
-        } else if (tabName === "code") {
-            setTimeout(() => {
-                if (win.targetSymbolId) {
-                    win.scrollToSymbol(win.targetSymbolId);
-                } else if (win.targetLine) {
-                    win.highlightError(win.targetLine, win.targetMessage);
+            if (win.targetSymbolId) {
+                const symName = win.targetSymbolId.split("::").pop();
+                const symNode = (win.canvasInstance.nodes || []).find(n =>
+                    n.id === win.targetSymbolId || n.rawSymbol?.id === win.targetSymbolId || n.label === symName || (symName && n.id.endsWith("::" + symName))
+                );
+                if (symNode) {
+                    win.canvasInstance.selectedNodeId = symNode.id;
+                    win.canvasInstance.isolateNeighborhood(symNode.id);
+                    if (win.updateSymbolBar) {
+                        win.updateSymbolBar(symNode);
+                    }
                 }
-            }, 40);
+            }
+        } else if (tabName === "code") {
+            if (win.targetSymbolId) {
+                win.scrollToSymbol(win.targetSymbolId);
+            } else if (win.targetLine) {
+                win.highlightError(win.targetLine, win.targetMessage);
+            }
         }
     }
 
     static resetSubgraphCanvas(fileId) {
-        const win = appState.activeSubgraphs.get(fileId);
+        const win = this.getWindow(fileId);
         if (win && win.canvasInstance) {
             win.canvasInstance.fitToScreen();
         }
     }
 
     static toggleCrossUsage(fileId, isEnabled) {
-        const win = appState.activeSubgraphs.get(fileId);
+        let win = this.getWindow(fileId);
         if (!win) return;
-        win.showCrossUsage = isEnabled;
-        const toggleLabel = document.getElementById(`${win.winId}-toggle-label`);
-        if (toggleLabel) {
-            toggleLabel.classList.toggle("active", isEnabled);
+        if (isEnabled === undefined) {
+            win.showCrossUsage = !win.showCrossUsage;
+        } else {
+            win.showCrossUsage = !!isEnabled;
+        }
+        const btn = document.getElementById(`${win.winId}-btn-cross`);
+        if (btn) {
+            btn.classList.toggle("active", win.showCrossUsage);
+            btn.classList.toggle("primary", win.showCrossUsage);
         }
         win.renderSymbolsGraph();
+        if (win.canvasInstance) {
+            setTimeout(() => {
+                if (win.canvasInstance) {
+                    win.canvasInstance.fitToScreen();
+                }
+            }, 60);
+        }
     }
 
     static async saveFile(fileId) {
-        let win = appState.activeSubgraphs.get(fileId);
-        if (!win) {
-            for (const [k, v] of appState.activeSubgraphs.entries()) {
-                if (v.fileId === fileId || k.endsWith(fileId) || fileId.endsWith(k)) {
-                    win = v;
-                    break;
-                }
-            }
-        }
+        let win = this.getWindow(fileId);
         if (!win) {
             App.showToast(`Error: Window for ${fileId} not found`, "error");
             return;
@@ -774,15 +1165,7 @@ class SubGraphManager {
     }
 
     static async revertFile(fileId) {
-        let win = appState.activeSubgraphs.get(fileId);
-        if (!win) {
-            for (const [k, v] of appState.activeSubgraphs.entries()) {
-                if (v.fileId === fileId || k.endsWith(fileId) || fileId.endsWith(k)) {
-                    win = v;
-                    break;
-                }
-            }
-        }
+        let win = this.getWindow(fileId);
         try {
             const target = win ? win.fileId : fileId;
             await CodeUIAPI.revertEdit(target);
@@ -811,7 +1194,9 @@ class SubGraphManager {
                 if (dom) {
                     dom.classList.remove("minimized");
                     dom.style.zIndex = ++this.topZ;
+                    this.tileWindows();
                     this.updateTaskbar();
+                    this.updateBackgroundInteractivity();
                 }
             };
             taskbar.appendChild(pill);
@@ -820,3 +1205,4 @@ class SubGraphManager {
 }
 
 window.SubGraphManager = SubGraphManager;
+window.addEventListener("resize", () => SubGraphManager.tileWindows());

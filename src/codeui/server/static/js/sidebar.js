@@ -1,271 +1,267 @@
 /**
- * Collapsible Explorer Sidebar & Tab Views Manager.
+ * Explorer Sidebar Controller for CodeUI.
  */
 class Sidebar {
-    static activeTab = "files";
+    static currentTab = "files";
+    static collapsed = true;
 
-    static toggleSidebar() {
+    static init() {
+        this.collapsed = true;
         const sidebar = document.getElementById("sidebar");
         const dockBtn = document.getElementById("btn-dock-sidebar");
-        if (!sidebar) return;
-
-        sidebar.classList.toggle("collapsed");
-        const isCollapsed = sidebar.classList.contains("collapsed");
-        if (dockBtn) dockBtn.style.display = isCollapsed ? "flex" : "none";
-
-        setTimeout(() => {
-            if (window.mainCanvas) {
-                window.mainCanvas.setupCanvas();
-            }
-        }, 260);
+        if (sidebar) sidebar.classList.add("collapsed");
+        if (dockBtn) dockBtn.style.display = "flex";
+        if (window.mainCanvas) {
+            setTimeout(() => window.mainCanvas.handleResize(), 100);
+        }
     }
 
     static switchTab(tabName) {
-        this.activeTab = tabName;
-        document.querySelectorAll(".sidebar-tabs .tab-btn").forEach(b => {
-            b.classList.toggle("active", b.getAttribute("onclick").includes(tabName));
+        this.currentTab = tabName;
+        document.querySelectorAll(".sidebar-tabs .tab-btn").forEach(btn => {
+            const active = btn.getAttribute("onclick")?.includes(`'${tabName}'`);
+            btn.classList.toggle("active", !!active);
         });
         this.renderCurrentTab();
     }
 
-    static renderCurrentTab() {
-        const content = document.getElementById("sidebar-tab-content");
-        if (!content) return;
-
-        if (this.activeTab === "files") this.renderFilesTab(content);
-        else if (this.activeTab === "features") this.renderFeaturesTab(content);
-        else if (this.activeTab === "defects") this.renderDefectsTab(content);
-        else if (this.activeTab === "stats") this.renderStatsTab(content);
+    static toggleSidebar() {
+        this.collapsed = !this.collapsed;
+        const sidebar = document.getElementById("sidebar");
+        const dockBtn = document.getElementById("btn-dock-sidebar");
+        if (sidebar) sidebar.classList.toggle("collapsed", this.collapsed);
+        if (dockBtn) dockBtn.style.display = this.collapsed ? "flex" : "none";
+        if (window.mainCanvas) {
+            setTimeout(() => window.mainCanvas.handleResize(), 200);
+        }
     }
 
-    static renderFilesTab(container) {
-        const query = (document.getElementById("search-box")?.value || "").toLowerCase();
-        const filesInfo = appState.rawGraph.files_info || {};
-        const files = (appState.rawGraph.files || []).filter(f => f.toLowerCase().includes(query));
+    static renderCurrentTab() {
+        const container = document.getElementById("sidebar-tab-content");
+        if (!container || !window.appState) return;
 
-        let html = `
-            <div class="layer-filters">
-                <span class="filter-chip ${appState.activeLayerFilter === 'all' ? 'active' : ''}" onclick="Sidebar.setLayerFilter('all')">All</span>
-                <span class="filter-chip ${appState.activeLayerFilter === 'entry' ? 'active' : ''}" onclick="Sidebar.setLayerFilter('entry')">Entry</span>
-                <span class="filter-chip ${appState.activeLayerFilter === 'frontend' ? 'active' : ''}" onclick="Sidebar.setLayerFilter('frontend')">Frontend</span>
-                <span class="filter-chip ${appState.activeLayerFilter === 'backend' ? 'active' : ''}" onclick="Sidebar.setLayerFilter('backend')">Backend</span>
-                <span class="filter-chip ${appState.activeLayerFilter === 'shared' ? 'active' : ''}" onclick="Sidebar.setLayerFilter('shared')">Shared</span>
-                <span class="filter-chip ${appState.activeLayerFilter === 'test' ? 'active' : ''}" onclick="Sidebar.setLayerFilter('test')">Tests</span>
-            </div>
-            <div style="font-size:0.7rem; color:var(--text-muted); margin-bottom:6px;">Showing ${files.length} project files</div>
-        `;
+        const q = (appState.searchQuery || "").toLowerCase();
+        const graph = appState.rawGraph || {};
 
-        files.forEach(f => {
-            const info = filesInfo[f] || { layer: "other", feature: "root", symbols_count: 0 };
-            if (appState.activeLayerFilter !== "all" && info.layer !== appState.activeLayerFilter) return;
-
-            const isSelected = appState.selectedFileNodeId === f;
-            const filename = f.split("/").pop();
-
-            html += `
-                <div class="item-card ${isSelected ? 'active' : ''}" id="card-${f.replace(/[^a-zA-Z0-9]/g, '_')}" onclick="Sidebar.onFileCardClick('${f}')">
-                    <div class="item-header">
-                        <span class="item-title">${filename}</span>
-                        <span class="badge ${info.layer}">${info.layer}</span>
+        if (this.currentTab === "files") {
+            const files = (graph.files || []).filter(f => !q || f.toLowerCase().includes(q));
+            if (files.length === 0) {
+                container.innerHTML = `<div class="empty-state" style="padding:16px; text-align:center; color:var(--text-dim); font-size:0.75rem;">No files found matching filter</div>`;
+                return;
+            }
+            const info = graph.files_info || {};
+            let html = `<div class="file-card-list">`;
+            files.forEach(f => {
+                const meta = info[f] || {};
+                const layer = meta.layer || "other";
+                const isSelected = appState.selectedFileNodeId === f;
+                html += `
+                    <div class="sidebar-item file-card ${isSelected ? 'selected' : ''}" data-id="${f}" onclick="Sidebar.onFileCardClick('${f}')">
+                        <div class="file-title" style="display:flex; align-items:center; gap:6px; font-weight:600; font-size:0.8rem; color:var(--text-main);">
+                            <span class="file-icon">📄</span>
+                            <span class="file-name" title="${f}">${f.split('/').pop()}</span>
+                        </div>
+                        <div class="file-meta" style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+                            <span class="badge layer-${layer}" style="font-size:0.65rem; padding:1px 5px; border-radius:4px; text-transform:uppercase; background:var(--bg-surface); border:1px solid var(--border-subtle); color:var(--text-muted);">${layer}</span>
+                            <span class="file-path" style="font-size:0.68rem; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:140px;" title="${f}">${f}</span>
+                        </div>
                     </div>
-                    <div class="item-sub">${f}</div>
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
-                        <span style="font-size:0.68rem; color:var(--accent);">${info.feature || 'root'}</span>
-                        <span style="font-size:0.65rem; color:var(--text-dim);">${info.symbols_count || 0} symbols</span>
+                `;
+            });
+            html += `</div>`;
+            container.innerHTML = html;
+        } else if (this.currentTab === "features") {
+            const info = graph.files_info || {};
+            const featureMap = {};
+            (graph.files || []).forEach(f => {
+                if (q && !f.toLowerCase().includes(q)) return;
+                const feat = info[f]?.feature || "root";
+                if (!featureMap[feat]) featureMap[feat] = [];
+                featureMap[feat].push(f);
+            });
+
+            const entries = Object.entries(featureMap);
+            if (entries.length === 0) {
+                container.innerHTML = `<div class="empty-state" style="padding:16px; text-align:center; color:var(--text-dim); font-size:0.75rem;">No features found</div>`;
+                return;
+            }
+
+            let html = `<div class="feature-group-list">`;
+            entries.forEach(([feat, fList]) => {
+                const featColor = appState.getFeatureColor(feat);
+                html += `
+                    <div class="feature-group" style="margin-bottom:12px;">
+                        <div class="feature-header" style="display:flex; align-items:center; justify-content:space-between; padding:6px 8px; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:6px; margin-bottom:4px; font-size:0.75rem; font-weight:700;">
+                            <div style="display:flex; align-items:center; gap:6px;">
+                                <span class="legend-shape" style="background:${featColor}; display:inline-block; width:10px; height:10px; border-radius:50%;"></span>
+                                <span class="feature-name" style="color:var(--text-main);">${feat}</span>
+                            </div>
+                            <span class="count-badge" style="background:var(--bg-base); padding:1px 6px; border-radius:10px; font-size:0.68rem; color:var(--text-muted);">${fList.length}</span>
+                        </div>
+                        <div class="feature-files">
+                            ${fList.map(f => `
+                                <div class="sidebar-item file-card" data-id="${f}" style="padding:4px 8px; margin:2px 0;" onclick="Sidebar.onFileCardClick('${f}')">
+                                    <span class="file-name" style="font-size:0.75rem; color:var(--text-main);">${f.split('/').pop()}</span>
+                                </div>
+                            `).join('')}
+                        </div>
                     </div>
+                `;
+            });
+            html += `</div>`;
+            container.innerHTML = html;
+        } else if (this.currentTab === "defects") {
+            const allFindings = appState.defectsData || [];
+            const apiDriftCount = allFindings.filter(d => d.rule_id === "api_drift").length;
+            const defectsCount = allFindings.length - apiDriftCount;
+
+            if (!this.defectSubFilter) this.defectSubFilter = "all";
+
+            const defects = allFindings.filter(d => {
+                if (this.defectSubFilter === "api_drift" && d.rule_id !== "api_drift") return false;
+                if (this.defectSubFilter === "defects" && d.rule_id === "api_drift") return false;
+                return !q || d.rule_id.toLowerCase().includes(q) || (d.message || "").toLowerCase().includes(q);
+            });
+
+            let html = `
+                <div class="defect-filter-bar" style="display:flex; gap:4px; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid var(--border-subtle); flex-wrap:wrap; align-items:center;">
+                    <button class="secondary ${this.defectSubFilter === 'all' ? 'active' : ''}" style="font-size:0.68rem; padding:2px 6px;" onclick="Sidebar.setDefectSubFilter('all')">All (${allFindings.length})</button>
+                    <button class="secondary ${this.defectSubFilter === 'defects' ? 'active' : ''}" style="font-size:0.68rem; padding:2px 6px;" onclick="Sidebar.setDefectSubFilter('defects')">Defects (${defectsCount})</button>
+                    <button class="secondary ${this.defectSubFilter === 'api_drift' ? 'active' : ''}" style="font-size:0.68rem; padding:2px 6px; color:var(--accent);" onclick="Sidebar.setDefectSubFilter('api_drift')">🌊 API Drift (${apiDriftCount})</button>
+                    <button class="secondary" style="font-size:0.65rem; padding:2px 6px; color:var(--accent); border-color:var(--border-subtle); margin-left:auto;" onclick="App.setApiBaseline()" title="Capture public symbols baseline snapshot">📸 Set Baseline</button>
                 </div>
             `;
-        });
 
-        container.innerHTML = html;
+            if (defects.length === 0) {
+                html += `<div class="empty-state" style="padding:16px; text-align:center; color:var(--text-dim); font-size:0.75rem;">No findings or API drift issues detected under current filter</div>`;
+                container.innerHTML = html;
+                return;
+            }
+
+            html += `<div class="defects-card-list">`;
+            defects.forEach(d => {
+                const loc = d.location || {};
+                const fId = loc.file_id || "unknown";
+                const line = loc.start_line || 1;
+                const isDrift = d.rule_id === "api_drift";
+                const badgeColor = isDrift ? "var(--accent)" : "var(--danger)";
+                const badgeLabel = isDrift ? "🌊 API Drift" : `⚠️ ${d.rule_id}`;
+                const safeMsg = (d.message || "").replace(/'/g, "\\'");
+                const symbolId = d.symbol_id || "";
+                html += `
+                    <div class="sidebar-item defect-card" style="padding:8px; border:1px solid ${isDrift ? 'var(--accent)' : 'var(--border-subtle)'}; border-radius:6px; margin-bottom:6px; background:var(--bg-surface); cursor:pointer;" onclick="Sidebar.openDefectLocation('${fId}', ${line}, '${symbolId}', '${safeMsg}')">
+                        <div class="defect-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                            <span class="defect-rule" style="font-weight:700; font-size:0.75rem; color:${badgeColor};">${badgeLabel}</span>
+                            <span class="defect-loc" style="font-size:0.68rem; color:var(--text-dim);">${fId.split('/').pop()}:${line}</span>
+                        </div>
+                        <div class="defect-msg" style="font-size:0.72rem; color:var(--text-muted); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;">${d.message}</div>
+                        ${d.fix_hint ? `<div style="font-size:0.65rem; color:var(--accent); margin-top:4px; font-style:italic;">💡 ${d.fix_hint}</div>` : ''}
+                    </div>
+                `;
+            });
+            html += `</div>`;
+            container.innerHTML = html;
+        } else if (this.currentTab === "stats") {
+            const filesCount = (graph.files || []).length;
+            const symbolsCount = (graph.symbols || []).length;
+            const edgesCount = (graph.edges || []).length;
+            const allFindings = appState.defectsData || [];
+            const defectsCount = allFindings.filter(d => d.rule_id !== "api_drift").length;
+            const apiDriftCount = allFindings.filter(d => d.rule_id === "api_drift").length;
+
+            const layerCounts = {};
+            const info = graph.files_info || {};
+            (graph.files || []).forEach(f => {
+                const l = info[f]?.layer || "other";
+                layerCounts[l] = (layerCounts[l] || 0) + 1;
+            });
+
+            let html = `
+                <div class="stats-panel" style="padding:8px;">
+                    <div class="stats-grid" style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <div class="stat-card" style="background:var(--bg-surface); padding:8px; border-radius:6px; border:1px solid var(--border-subtle); text-align:center;">
+                            <div class="stat-num" style="font-size:1.1rem; font-weight:800; color:var(--primary);">${filesCount}</div>
+                            <div class="stat-label" style="font-size:0.68rem; color:var(--text-dim);">Files</div>
+                        </div>
+                        <div class="stat-card" style="background:var(--bg-surface); padding:8px; border-radius:6px; border:1px solid var(--border-subtle); text-align:center;">
+                            <div class="stat-num" style="font-size:1.1rem; font-weight:800; color:var(--primary);">${symbolsCount}</div>
+                            <div class="stat-label" style="font-size:0.68rem; color:var(--text-dim);">Symbols</div>
+                        </div>
+                        <div class="stat-card" style="background:var(--bg-surface); padding:8px; border-radius:6px; border:1px solid var(--border-subtle); text-align:center;">
+                            <div class="stat-num" style="font-size:1.1rem; font-weight:800; color:var(--primary);">${edgesCount}</div>
+                            <div class="stat-label" style="font-size:0.68rem; color:var(--text-dim);">Edges</div>
+                        </div>
+                        <div class="stat-card" style="background:var(--bg-surface); padding:8px; border-radius:6px; border:1px solid var(--border-subtle); text-align:center;">
+                            <div class="stat-num" style="font-size:1.1rem; font-weight:800; color:var(--danger);">${defectsCount}</div>
+                            <div class="stat-label" style="font-size:0.68rem; color:var(--text-dim);">Defects</div>
+                        </div>
+                        <div class="stat-card" style="background:var(--bg-surface); padding:8px; border-radius:6px; border:1px solid var(--border-subtle); grid-column: span 2; text-align:center;">
+                            <div class="stat-num" style="font-size:1.1rem; font-weight:800; color:var(--accent);">${apiDriftCount}</div>
+                            <div class="stat-label" style="font-size:0.68rem; color:var(--text-dim);">Public API Drift Warnings</div>
+                        </div>
+                    </div>
+                    <div style="margin-top:16px; font-weight:700; font-size:0.8rem; color:var(--text-muted);">Layers Distribution</div>
+                    <div class="layers-list" style="margin-top:8px;">
+            `;
+            Object.entries(layerCounts).forEach(([l, count]) => {
+                const color = appState.LAYER_COLORS[l] || "var(--text-dim)";
+                html += `
+                    <div class="layer-stat-row" style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:0.75rem;">
+                        <span><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${color}; margin-right:6px;"></span>${l}</span>
+                        <span style="color:var(--text-muted); font-weight:600;">${count} files</span>
+                    </div>
+                `;
+            });
+            html += `</div></div>`;
+            container.innerHTML = html;
+        }
+    }
+
+    static setDefectSubFilter(sub) {
+        this.defectSubFilter = sub;
+        this.renderCurrentTab();
+    }
+
+    static highlightSelectedCard(nodeId) {
+        this.clearSelection();
+        if (!nodeId) return;
+        const cards = document.querySelectorAll(`.sidebar-item[data-id="${nodeId}"]`);
+        cards.forEach(card => {
+            card.classList.add("selected");
+            card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        });
+    }
+
+    static clearSelection() {
+        document.querySelectorAll(".sidebar-item.selected").forEach(c => c.classList.remove("selected"));
     }
 
     static onFileCardClick(fileId) {
         appState.selectedFileNodeId = fileId;
         this.highlightSelectedCard(fileId);
-        window.mainCanvas?.isolateNeighborhood(fileId);
-        SubGraphManager.openWindow(fileId);
-        const node = (window.mainCanvas?.nodes || []).find(n => n.id === fileId);
-        if (node && window.mainCanvas) {
-            window.mainCanvas.panTo(node.x, node.y);
+        if (window.mainCanvas) {
+            window.mainCanvas.selectAndCenterNode(fileId);
         }
     }
 
-    static clearSelection() {
-        document.querySelectorAll(".item-card").forEach(c => c.classList.remove("active"));
-    }
-
-    static highlightSelectedCard(nodeId) {
-        document.querySelectorAll(".item-card").forEach(c => c.classList.remove("active"));
-        const card = document.getElementById(`card-${nodeId.replace(/[^a-zA-Z0-9]/g, '_')}`);
-        if (card) {
-            card.classList.add("active");
-            card.scrollIntoView({ block: "nearest", behavior: "smooth" });
-        }
-    }
-
-    static setLayerFilter(layer) {
-        appState.activeLayerFilter = layer;
-        this.renderCurrentTab();
-        App.applyGraphFilter();
-    }
-
-    static renderFeaturesTab(container) {
-        const filesInfo = appState.rawGraph.files_info || {};
-        const featuresMap = new Map();
-
-        Object.entries(filesInfo).forEach(([f, info]) => {
-            const feat = info.feature || "root";
-            if (!featuresMap.has(feat)) featuresMap.set(feat, []);
-            featuresMap.get(feat).push(f);
-        });
-
-        let html = `<div style="font-size:0.7rem; color:var(--text-muted); margin-bottom:6px;">Architectural Feature Clusters</div>`;
-
-        featuresMap.forEach((files, feat) => {
-            const color = appState.getFeatureColor(feat);
-            html += `
-                <div class="item-card" style="border-left: 3px solid ${color};">
-                    <div class="item-header">
-                        <span class="item-title" style="color:${color};">${feat}</span>
-                        <span class="badge" style="background:${color}22; color:${color};">${files.length} files</span>
-                    </div>
-                    <div style="font-size:0.7rem; color:var(--text-muted); margin-top:4px;">
-                        ${files.slice(0, 3).map(f => f.split('/').pop()).join(', ')}${files.length > 3 ? '...' : ''}
-                    </div>
-                </div>
-            `;
-        });
-
-        container.innerHTML = html;
-    }
-
-    static renderDefectsTab(container) {
-        const defects = (appState.defectsData || []).filter(d => !appState.ignoredDefectIds.has(d.id) && !appState.ignoredRuleIds.has(d.rule_id));
-
-        let html = `
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <span style="font-size:0.75rem; font-weight:700; color:var(--danger);">Defect Findings (${defects.length})</span>
-                ${(appState.ignoredDefectIds.size > 0 || appState.ignoredRuleIds.size > 0) ? `<button class="secondary" style="font-size:0.65rem; padding:2px 6px;" id="btn-restore-defects">Reset Ignored</button>` : ''}
-            </div>
-        `;
-
-        if (defects.length === 0) {
-            html += `<div style="color:var(--success); text-align:center; padding:20px; font-size:0.75rem;">✓ No active defects or code smell violations found!</div>`;
-            container.innerHTML = html;
-            return;
-        }
-
-        defects.forEach((d, idx) => {
-            const loc = d.location || { file_id: "unknown", start_line: 1 };
-            const isErr = d.severity === "error";
-            const safeFile = this.escapeHtml(loc.file_id || "");
-            const safeMsg = this.escapeHtml(d.message || "");
-            const safeRule = this.escapeHtml(d.rule_id || "");
-            const safeHint = d.fix_hint ? this.escapeHtml(d.fix_hint) : "";
-            const safeId = this.escapeHtml(d.id || `defect-${idx}`);
-            const safeSymId = this.escapeHtml(d.symbol_id || "");
-
-            html += `
-                <div class="item-card" style="border-left: 3px solid ${isErr ? 'var(--danger)' : 'var(--warning)'};">
-                    <div class="item-header">
-                        <span class="item-title" style="color:${isErr ? '#fca5a5' : '#fde68a'};">${safeRule}</span>
-                        <span class="badge ${d.severity}">${d.severity}</span>
-                    </div>
-                    <div style="font-size:0.72rem; color:#cbd5e1; margin-top:4px;">${safeMsg}</div>
-                    <div class="item-sub">${safeFile}:${loc.start_line}</div>
-                    ${safeHint ? `<div style="font-size:0.68rem; color:var(--accent); margin-top:4px; font-style:italic;">Fix: ${safeHint}</div>` : ''}
-                    <div class="defect-actions">
-                        <button class="secondary btn-defect-view" data-file="${safeFile}" data-line="${loc.start_line}" data-sym="${safeSymId}" data-msg="${safeMsg}">View Code</button>
-                        <button class="secondary btn-defect-ignore" data-id="${safeId}">Ignore Finding</button>
-                        <button class="secondary btn-rule-ignore" data-rule="${safeRule}">Ignore Rule</button>
-                    </div>
-                </div>
-            `;
-        });
-
-        container.innerHTML = html;
-
-        container.querySelectorAll(".btn-defect-view").forEach(btn => {
-            btn.addEventListener("click", () => {
-                const file = btn.getAttribute("data-file");
-                const line = parseInt(btn.getAttribute("data-line") || "1", 10);
-                const sym = btn.getAttribute("data-sym") || "";
-                const msg = btn.getAttribute("data-msg") || "";
-                Sidebar.openDefectLocation(file, line, sym, msg);
+    static openDefectLocation(fileId, line = 1, symbol = null, message = "") {
+        let targetSymbol = symbol && symbol.length > 0 ? symbol : null;
+        if (!targetSymbol && appState.rawGraph?.symbols) {
+            const fileSyms = appState.rawGraph.symbols.filter(s => {
+                const sFile = s.location?.file_id;
+                return sFile === fileId || sFile?.endsWith("/" + fileId) || fileId.endsWith("/" + sFile);
             });
-        });
-
-        container.querySelectorAll(".btn-defect-ignore").forEach(btn => {
-            btn.addEventListener("click", () => {
-                Sidebar.ignoreDefect(btn.getAttribute("data-id"));
-            });
-        });
-
-        container.querySelectorAll(".btn-rule-ignore").forEach(btn => {
-            btn.addEventListener("click", () => {
-                Sidebar.ignoreRule(btn.getAttribute("data-rule"));
-            });
-        });
-
-        const restoreBtn = container.querySelector("#btn-restore-defects");
-        if (restoreBtn) {
-            restoreBtn.addEventListener("click", () => Sidebar.restoreAllIgnoredDefects());
+            const match = fileSyms.find(s =>
+                s.location &&
+                s.location.start_line <= line &&
+                (s.location.end_line || s.location.start_line) >= line
+            );
+            if (match) targetSymbol = match.id;
         }
-    }
 
-    static escapeHtml(str) {
-        if (!str) return "";
-        return String(str)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#39;");
-    }
-
-    static openDefectLocation(fileId, line, symbolId, message) {
-        SubGraphManager.openWindow(fileId, symbolId, line, message);
-        SubGraphManager.switchTab(fileId, "code");
-    }
-
-    static ignoreDefect(defectId) {
-        appState.ignoredDefectIds.add(defectId);
-        this.renderCurrentTab();
-        App.showToast("Finding ignored for this session", "info");
-    }
-
-    static ignoreRule(ruleId) {
-        appState.ignoredRuleIds.add(ruleId);
-        this.renderCurrentTab();
-        App.showToast(`Rule '${ruleId}' ignored`, "info");
-    }
-
-    static restoreAllIgnoredDefects() {
-        appState.ignoredDefectIds.clear();
-        appState.ignoredRuleIds.clear();
-        this.renderCurrentTab();
-        App.showToast("All defect findings restored", "info");
-    }
-
-    static renderStatsTab(container) {
-        const filesCount = (appState.rawGraph.files || []).length;
-        const symsCount = (appState.rawGraph.symbols || []).length;
-        const edgesCount = (appState.rawGraph.edges || []).length;
-        const defectsCount = (appState.defectsData || []).length;
-
-        container.innerHTML = `
-            <div class="stats-grid">
-                <div class="stat-card"><div class="stat-val">${filesCount}</div><div class="stat-lbl">Files</div></div>
-                <div class="stat-card"><div class="stat-val">${symsCount}</div><div class="stat-lbl">Symbols</div></div>
-                <div class="stat-card"><div class="stat-val">${edgesCount}</div><div class="stat-lbl">Dependencies</div></div>
-                <div class="stat-card"><div class="stat-val" style="color:var(--danger);">${defectsCount}</div><div class="stat-lbl">Defects</div></div>
-            </div>
-            <div style="font-size:0.72rem; color:var(--text-muted); line-height:1.5; padding:6px;">
-                <strong>Universal Code Intelligence</strong><br>
-                Interactive dependency visualizer, defect detector, and non-destructive override environment.
-            </div>
-        `;
+        if (window.SubGraphManager) {
+            SubGraphManager.openWindow(fileId, targetSymbol, line, message, "graph");
+        }
     }
 }
 

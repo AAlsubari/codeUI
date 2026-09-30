@@ -1,7 +1,3 @@
-/**
- * Interactive Mini-Map Component for codeui Main Graph Visualization.
- * Provides live architectural overview, spatial orientation, and click/drag camera panning for large codebases.
- */
 class MiniMap {
     constructor(mainCanvas) {
         this.mainCanvas = mainCanvas;
@@ -32,37 +28,45 @@ class MiniMap {
         };
 
         if (this.canvas) {
-            this.setupEvents();
+            this.setupHeaderToggle();
             this.resizeCanvas();
             this.restoreState();
         }
     }
 
+    setupHeaderToggle() {
+        const header = this.container ? this.container.querySelector(".minimap-header") : null;
+        if (header) {
+            header.style.cursor = "pointer";
+            header.addEventListener("click", (e) => {
+                e.stopPropagation();
+                this.isCollapsed = !this.isCollapsed;
+                const wrapper = this.container.querySelector(".minimap-canvas-wrapper");
+                if (wrapper) {
+                    wrapper.style.display = this.isCollapsed ? "none" : "block";
+                }
+                if (!this.isCollapsed) {
+                    this.update();
+                }
+            });
+        }
+    }
+
     restoreState() {
-        try {
-            const saved = localStorage.getItem("codeui_minimap_collapsed");
-            if (saved === "1" || (window.innerWidth <= 768 && saved === null)) {
-                this.collapse();
-            }
-        } catch (_) {}
+        this.isCollapsed = false;
+        if (this.container) this.container.style.display = "flex";
+        if (this.dockBtn) this.dockBtn.style.display = "none";
     }
 
     collapse() {
-        this.isCollapsed = true;
-        if (this.container) this.container.style.display = "none";
-        if (this.dockBtn) this.dockBtn.style.display = "flex";
-        try {
-            localStorage.setItem("codeui_minimap_collapsed", "1");
-        } catch (_) {}
+        this.isCollapsed = false;
+        if (this.container) this.container.style.display = "flex";
     }
 
     expand() {
         this.isCollapsed = false;
         if (this.container) this.container.style.display = "flex";
         if (this.dockBtn) this.dockBtn.style.display = "none";
-        try {
-            localStorage.setItem("codeui_minimap_collapsed", "0");
-        } catch (_) {}
         this.resizeCanvas();
         this.update();
     }
@@ -288,17 +292,21 @@ class MiniMap {
 
         this.ctx.clearRect(0, 0, this.cssWidth, this.cssHeight);
 
-        // Faint coordinate background dots
-        this.ctx.fillStyle = "rgba(51, 65, 85, 0.35)";
+        const themeColors = window.ThemeManager ? window.ThemeManager.getCanvasColors() : null;
+        const dotsColor = themeColors ? themeColors.minimapDots : "rgba(51, 65, 85, 0.35)";
+        const linksColor = themeColors ? themeColors.minimapLinks : "rgba(71, 85, 105, 0.35)";
+        const vfBg = themeColors ? themeColors.minimapViewfinder : "rgba(56, 189, 248, 0.12)";
+        const vfBorder = themeColors ? themeColors.minimapViewfinderBorder : "#38bdf8";
+
+        this.ctx.fillStyle = dotsColor;
         for (let gx = 10; gx < this.cssWidth; gx += 20) {
             for (let gy = 10; gy < this.cssHeight; gy += 20) {
                 this.ctx.fillRect(gx, gy, 1, 1);
             }
         }
 
-        // 1. Draw Links
         const links = this.mainCanvas.links || [];
-        this.ctx.strokeStyle = "rgba(71, 85, 105, 0.35)";
+        this.ctx.strokeStyle = linksColor;
         this.ctx.lineWidth = 0.8;
         this.ctx.beginPath();
         for (let i = 0; i < links.length; i++) {
@@ -312,7 +320,6 @@ class MiniMap {
         }
         this.ctx.stroke();
 
-        // 2. Draw Nodes
         const selNodeId = appState.selectedFileNodeId;
         const unusedNodeIds = appState.unusedHighlightMode ? appState.getUnusedNodeIds() : null;
 
@@ -339,38 +346,32 @@ class MiniMap {
             if (isSelected) {
                 this.ctx.beginPath();
                 this.ctx.arc(nx, ny, r + 2.5, 0, Math.PI * 2);
-                this.ctx.strokeStyle = "#38bdf8";
+                this.ctx.strokeStyle = vfBorder;
                 this.ctx.lineWidth = 1.5;
                 this.ctx.stroke();
             }
         }
 
-        // 3. Draw Viewfinder (Frustum Rectangle)
-        this.ctx.fillStyle = "rgba(56, 189, 248, 0.12)";
+        this.ctx.fillStyle = vfBg;
         this.ctx.fillRect(vfX, vfY, vfW, vfH);
-        this.ctx.strokeStyle = "#38bdf8";
+        this.ctx.strokeStyle = vfBorder;
         this.ctx.lineWidth = 1.5;
         this.ctx.strokeRect(vfX, vfY, vfW, vfH);
 
-        // Corner accents for camera view
         const cornerLen = Math.min(6, Math.max(2, Math.min(vfW, vfH) / 3));
         if (cornerLen > 2) {
             this.ctx.strokeStyle = "#ffffff";
             this.ctx.lineWidth = 2;
             this.ctx.beginPath();
-            // Top-left
             this.ctx.moveTo(vfX, vfY + cornerLen);
             this.ctx.lineTo(vfX, vfY);
             this.ctx.lineTo(vfX + cornerLen, vfY);
-            // Top-right
             this.ctx.moveTo(vfX + vfW - cornerLen, vfY);
             this.ctx.lineTo(vfX + vfW, vfY);
             this.ctx.lineTo(vfX + vfW, vfY + cornerLen);
-            // Bottom-left
             this.ctx.moveTo(vfX, vfY + vfH - cornerLen);
             this.ctx.lineTo(vfX, vfY + vfH);
             this.ctx.lineTo(vfX + cornerLen, vfY + vfH);
-            // Bottom-right
             this.ctx.moveTo(vfX + vfW - cornerLen, vfY + vfH);
             this.ctx.lineTo(vfX + vfW, vfY + vfH);
             this.ctx.lineTo(vfX + vfW, vfY + vfH - cornerLen);
