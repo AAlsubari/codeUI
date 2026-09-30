@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style](https://img.shields.io/badge/code%20style-strict-green.svg)](https://github.com/AAlsubari/codeUI)
 
-**`codeui-python`** (`codeui`) is an open-source static analysis engine that converts Project or polyglot software repository into a rich, **interactive web graph visualizer**, call-hierarchy tracer, defect detector, live code editor, and AI agent context builder.
+**`codeui-python`** (`codeui`) is an open-source static analysis engine that converts any Python or polyglot software repository into a rich, **interactive web graph visualizer**, call-hierarchy tracer, defect detector, live code editor, and AI agent context builder.
 
 It safely parses codebases via AST (Abstract Syntax Tree) without ever executing or importing target code, producing a universal intermediate representation (IR) graph.
 
@@ -16,9 +16,9 @@ It safely parses codebases via AST (Abstract Syntax Tree) without ever executing
 
 ## 🌟 Main Features
 
-### 1. 🕸️ Convert Project into an Interactive Graph
+### 1. 🕸️ Convert Any Project into an Interactive Graph
 Effortlessly explore your entire codebase as a force-directed, interactive visual dependency graph:
-- **Universal AST Parsing**: Maps modules, classes, functions, variables, imports, and calls across Python, TypeScript, Go, Rust, . (in progress for other languages)
+- **Universal AST Parsing**: Maps modules, classes, functions, variables, imports, and calls across Python, TypeScript, Go, Rust, Java, .etc.
 - **Multi-Window Subgraph Workspaces**: Open symbols, modules, and call chains in floating, draggable windows.
 - **Cross-Usage Navigation**: Trace incoming/outgoing references across files in real time.
 
@@ -38,15 +38,15 @@ Includes 8 built-in static defect analyzers that identify structural code bugs b
 - `shadowing`: Variable shadowing across nested lexical scopes.
 - `api_drift`: Public API signature changes and breaking contract drift against baseline snapshots.
 
-### 4. 🤖 AI Agent Context Engine & Self-Improvement
+### 4. 🤖 AI Agent Context Engine 
 - **Smart Subgraph Bundling**: Extracts minimal, context-complete subgraphs for LLMs (Claude, GPT-4, Gemini) without token bloat.
-- **Automated Agent Contributions**: Integrated `ContributionManager` allows AI agents to scan, clone, repair bugs, and submit pull request contributions back to the `codeUI` repository.
+
 
 ---
 
 ## ⚠️ Initial Release Notice & Call for Contributions
 
-> **Note on Version 0.1.0**:  
+> **Note on Version 0.1.1**:  
 > `codeui-python` is currently in an **initial pre-release version**. Static analysis across complex, dynamic multi-language codebases is intricate, and you may encounter bugs, unparsed syntax edge cases, or unsupported language features.
 >
 > 🚀 **We Welcome All Contributions!**  

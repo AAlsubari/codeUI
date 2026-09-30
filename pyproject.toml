@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codeui-python"
-version = "0.1.0"
+version = "0.1.1"
 description = "Universal static analysis code intelligence library, defect detector, graph visualizer, and agent context builder"
 readme = "README.md"
 authors = [
@@ -60,14 +60,15 @@ codeui = "codeui.cli.main:main"
 where = ["src"]
 include = ["codeui*"]
 
+[tool.setuptools.package-data]
+codeui = ["server/static/**/*", "server/static/*"]
+
 [tool.pytest.ini_options]
-pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "--doctest-modules"
 
 [tool.mypy]
 python_version = "3.10"
-mypy_path = "src"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

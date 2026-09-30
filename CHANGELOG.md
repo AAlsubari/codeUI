@@ -1,5 +1,12 @@
 # CHANGELOG — codeui
 
+## [0.1.1] - 2026-09-29
+### Changed
+- Standardized packaging exclusively on `pyproject.toml` (PEP 517/PEP 621), eliminating redundant and conflicting `setup.py`.
+- Synchronized package version to `0.1.1` across `pyproject.toml`, `codeui.__version__`, SARIF report emitter, REST API metadata, and `package.json`.
+- Enhanced interactive graph canvas with dynamic physics spacing, hierarchical symbols clustering, and centralized theme token support.
+- Streamlined defect-to-symbol navigation linking defect cards directly to isolated symbol subgraphs and error highlights in code editor.
+
 ## [0.1.0] - 2026-09-19
 ### Added
 - Initial release of `codeui`.

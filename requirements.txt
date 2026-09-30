@@ -1,0 +1,7 @@
+# codeui - Universal Code-Intelligence Library
+# Core runtime has ZERO external dependencies (Pure Python >=3.10 Standard Library)
+
+# Optional development and testing dependencies
+pytest>=7.0.0
+mypy>=1.0.0
+ruff>=0.1.0
