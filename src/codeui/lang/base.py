@@ -1,11 +1,14 @@
 """Base interface for language AST adapters."""
+from __future__ import annotations
 import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Iterable, List, Sequence
+from typing import Any, ClassVar, Iterable, List, Sequence, TYPE_CHECKING
 from codeui.core.ir import Edge, Location, Symbol
-from codeui.core.resolver import ResolveContext
+
+if TYPE_CHECKING:
+    from codeui.core.resolver import ResolveContext
 
 @dataclass
 class ParseResult:

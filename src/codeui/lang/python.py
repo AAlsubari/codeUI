@@ -1,12 +1,15 @@
 """Python language adapter using standard library ast."""
+from __future__ import annotations
 import ast
 import hashlib
 import re
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, ClassVar, Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 from codeui.core.ir import Edge, EdgeKind, Location, Symbol, SymbolKind, Visibility
-from codeui.core.resolver import ResolveContext
 from codeui.lang.base import ImportRef, LanguageAnalyzer, ParseResult
+
+if TYPE_CHECKING:
+    from codeui.core.resolver import ResolveContext
 
 class PythonLanguageAnalyzer(LanguageAnalyzer):
     """Python language analyzer using standard library ast.
@@ -192,6 +195,17 @@ class PythonLanguageAnalyzer(LanguageAnalyzer):
                         location=Location(parse.file_path, node.lineno, node.col_offset, node.lineno, node.col_offset),
                     ))
         class_names = {s.name for s in symbols if s.kind == SymbolKind.CLASS}
+        extracted_sym_ids = {s.id for s in symbols}
+
+        def _extract_names(target_node: ast.AST) -> set[str]:
+            names = set()
+            if isinstance(target_node, ast.Name):
+                names.add(target_node.id)
+            elif isinstance(target_node, (ast.Tuple, ast.List)):
+                for elt in target_node.elts:
+                    names.update(_extract_names(elt))
+            return names
+
         def walk_calls(node: ast.AST, current_scope: str, class_scope: str, locals_in_scope: set[str]) -> None:
             for child in ast.iter_child_nodes(node):
                 if isinstance(child, ast.ClassDef):
@@ -219,21 +233,49 @@ class PythonLanguageAnalyzer(LanguageAnalyzer):
                         new_locals.add(child.args.vararg.arg)
                     if getattr(child.args, "kwarg", None):
                         new_locals.add(child.args.kwarg.arg)
+                    
                     for subnode in ast.walk(child):
                         if isinstance(subnode, ast.Assign):
                             for target in subnode.targets:
-                                if isinstance(target, ast.Name):
-                                    new_locals.add(target.id)
+                                new_locals.update(_extract_names(target))
                         elif isinstance(subnode, ast.AnnAssign):
-                            if isinstance(subnode.target, ast.Name):
-                                new_locals.add(subnode.target.id)
+                            new_locals.update(_extract_names(subnode.target))
+                        elif isinstance(subnode, (ast.For, ast.AsyncFor)):
+                            new_locals.update(_extract_names(subnode.target))
+                        elif isinstance(subnode, (ast.With, ast.AsyncWith)):
+                            for item in subnode.items:
+                                if item.optional_vars:
+                                    new_locals.update(_extract_names(item.optional_vars))
+                        elif isinstance(subnode, ast.ExceptHandler):
+                            if subnode.name:
+                                new_locals.add(subnode.name)
+                        elif isinstance(subnode, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                            for gen in subnode.generators:
+                                new_locals.update(_extract_names(gen.target))
+                                
                     walk_calls(child, func_sym_id, class_scope, new_locals)
                 elif isinstance(child, ast.Call):
                     caller_id = current_scope if current_scope else parse.file_path
                     if isinstance(child.func, ast.Name):
                         callee_name = child.func.id
                         if callee_name not in locals_in_scope:
-                            target_id = import_map.get(callee_name, f"{parse.file_path}::{callee_name}")
+                            target_id = None
+                            if current_scope:
+                                scope_parts = current_scope.split("::")[-1].split(".")
+                                for i in range(len(scope_parts), 0, -1):
+                                    candidate_prefix = ".".join(scope_parts[:i])
+                                    candidate_id = f"{parse.file_path}::{candidate_prefix}.{callee_name}"
+                                    if candidate_id in extracted_sym_ids:
+                                        target_id = candidate_id
+                                        break
+                            
+                            if not target_id:
+                                candidate_id = f"{parse.file_path}::{callee_name}"
+                                if candidate_id in extracted_sym_ids:
+                                    target_id = candidate_id
+                                else:
+                                    target_id = import_map.get(callee_name, f"{parse.file_path}::{callee_name}")
+
                             weight = float(self._count_symbol_usages(parse.source, callee_name))
                             edges.append(Edge(
                                 source_id=caller_id,

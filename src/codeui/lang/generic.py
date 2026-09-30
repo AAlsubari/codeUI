@@ -1,10 +1,13 @@
 """Generic markup, config, and fallback language analyzer for codeui."""
+from __future__ import annotations
 import hashlib
 from pathlib import Path
-from typing import ClassVar, Iterable, List, Sequence
+from typing import ClassVar, Iterable, List, Sequence, TYPE_CHECKING
 from codeui.core.ir import Edge, EdgeKind, Location, Symbol, SymbolKind, Visibility
-from codeui.core.resolver import ResolveContext
 from codeui.lang.base import ImportRef, LanguageAnalyzer, ParseResult
+
+if TYPE_CHECKING:
+    from codeui.core.resolver import ResolveContext
 
 class GenericLanguageAnalyzer(LanguageAnalyzer):
     """Fallback analyzer for configuration, markup, and generic source files.
@@ -19,8 +22,7 @@ class GenericLanguageAnalyzer(LanguageAnalyzer):
     has_ast_support: ClassVar[bool] = False
     is_supported: ClassVar[bool] = False
     extensions: ClassVar[tuple[str, ...]] = (
-        ".java", ".kt", ".cs", ".rb", ".php", ".swift", ".vue", ".svelte",
-        ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".m", ".mm", ".scala"
+        ".vue", ".svelte", ".m", ".mm", ".xml", ".html"
     )
 
     def parse(self, path: Path, source: str) -> ParseResult:

@@ -6,6 +6,15 @@ from codeui.lang.python import PythonLanguageAnalyzer
 from codeui.lang.ts import TSLanguageAnalyzer
 from codeui.lang.go import GoLanguageAnalyzer
 from codeui.lang.rust import RustLanguageAnalyzer
+from codeui.lang.java import JavaLanguageAnalyzer
+from codeui.lang.cpp import CppLanguageAnalyzer
+from codeui.lang.csharp import CSharpLanguageAnalyzer
+from codeui.lang.php import PHPLanguageAnalyzer
+from codeui.lang.ruby import RubyLanguageAnalyzer
+from codeui.lang.kotlin import KotlinLanguageAnalyzer
+from codeui.lang.swift import SwiftLanguageAnalyzer
+from codeui.lang.scala import ScalaLanguageAnalyzer
+from codeui.lang.dart import DartLanguageAnalyzer
 from codeui.lang.generic import GenericLanguageAnalyzer
 
 class LanguageRegistry:
@@ -22,10 +31,19 @@ class LanguageRegistry:
             TSLanguageAnalyzer(),
             GoLanguageAnalyzer(),
             RustLanguageAnalyzer(),
+            JavaLanguageAnalyzer(),
+            CppLanguageAnalyzer(),
+            CSharpLanguageAnalyzer(),
+            PHPLanguageAnalyzer(),
+            RubyLanguageAnalyzer(),
+            KotlinLanguageAnalyzer(),
+            SwiftLanguageAnalyzer(),
+            ScalaLanguageAnalyzer(),
+            DartLanguageAnalyzer(),
             GenericLanguageAnalyzer(),
         ]
         self._ext_map: Dict[str, LanguageAnalyzer] = {}
-        for analyzer in self._analyzers:
+        for analyzer in reversed(self._analyzers):
             for ext in analyzer.extensions:
                 self._ext_map[ext.lower()] = analyzer
 
@@ -37,7 +55,9 @@ class LanguageRegistry:
         """
         self._analyzers.append(analyzer)
         for ext in analyzer.extensions:
-            self._ext_map[ext.lower()] = analyzer
+            ext_lower = ext.lower()
+            if type(analyzer).__name__ != "GenericLanguageAnalyzer" or ext_lower not in self._ext_map:
+                self._ext_map[ext_lower] = analyzer
 
     def get_analyzer(self, path: Path) -> LanguageAnalyzer:
         """Find language analyzer matching file extension or filename.

@@ -1,11 +1,14 @@
 """Go language adapter for codeui."""
+from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
-from typing import ClassVar, Iterable, List, Sequence
+from typing import ClassVar, Iterable, List, Sequence, TYPE_CHECKING
 from codeui.core.ir import Edge, EdgeKind, Location, Symbol, SymbolKind, Visibility
-from codeui.core.resolver import ResolveContext
 from codeui.lang.base import ImportRef, LanguageAnalyzer, ParseResult
+
+if TYPE_CHECKING:
+    from codeui.core.resolver import ResolveContext
 
 class GoLanguageAnalyzer(LanguageAnalyzer):
     """Go language analyzer.

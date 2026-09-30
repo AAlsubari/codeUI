@@ -1,11 +1,14 @@
 """TypeScript/JavaScript language adapter for codeui."""
+from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
-from typing import ClassVar, Iterable, List, Sequence
+from typing import ClassVar, Iterable, List, Sequence, TYPE_CHECKING
 from codeui.core.ir import Edge, EdgeKind, Location, Symbol, SymbolKind, Visibility
-from codeui.core.resolver import ResolveContext
 from codeui.lang.base import ImportRef, LanguageAnalyzer, ParseResult
+
+if TYPE_CHECKING:
+    from codeui.core.resolver import ResolveContext
 
 class TSLanguageAnalyzer(LanguageAnalyzer):
     """TypeScript and JavaScript language adapter.
@@ -64,8 +67,8 @@ class TSLanguageAnalyzer(LanguageAnalyzer):
             content_hash=parse.content_hash,
         )
         symbols.append(file_sym)
-        class_pattern = re.compile(r'(?:export\s+)?(?:default\s+)?class\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?(?:\s+extends\s+([A-Za-z0-9_$]+))?')
-        interface_pattern = re.compile(r'(?:export\s+)?interface\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?')
+        class_pattern = re.compile(r'(?:export\s+)?(?:default\s+)?class\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?(?:\s+extends\s+([A-Za-z0-9_$.]+))?(?:\s+implements\s+([A-Za-z0-9_$,\s]+))?')
+        interface_pattern = re.compile(r'(?:export\s+)?interface\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?(?:\s+extends\s+([A-Za-z0-9_$,\s]+))?')
         type_pattern = re.compile(r'(?:export\s+)?type\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?\s*=')
         func_pattern = re.compile(r'(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(')
         const_func_pattern = re.compile(r'(?:export\s+)?(?:default\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:<[^>]+>)?\s*\(')
@@ -292,6 +295,8 @@ class TSLanguageAnalyzer(LanguageAnalyzer):
         edges: List[Edge] = []
         file_path = parse.file_path
         sym_map = {s.id: s for s in symbols}
+        import_map: dict[str, str] = {}
+
         for s in symbols:
             if s.parent_id and s.parent_id in sym_map:
                 edges.append(Edge(
@@ -304,6 +309,21 @@ class TSLanguageAnalyzer(LanguageAnalyzer):
                 ))
             if s.kind == SymbolKind.IMPORT:
                 target_mod = s.qualified_name.replace("import:", "")
+                raw_spec = s.name.strip()
+                if raw_spec:
+                    for part in raw_spec.split(","):
+                        part_clean = part.strip()
+                        if not part_clean:
+                            continue
+                        if " as " in part_clean:
+                            orig, alias = part_clean.split(" as ", 1)
+                            import_map[alias.strip()] = f"module::{target_mod}::{orig.strip()}"
+                        elif part_clean.startswith("*"):
+                            alias_name = part_clean.replace("*", "").replace("as", "").strip()
+                            if alias_name:
+                                import_map[alias_name] = f"module::{target_mod}"
+                        else:
+                            import_map[part_clean] = f"module::{target_mod}::{part_clean}"
                 weight = float(self._count_symbol_usages(parse.source, s.name))
                 edges.append(Edge(
                     source_id=file_path,
@@ -313,7 +333,11 @@ class TSLanguageAnalyzer(LanguageAnalyzer):
                     confidence=1.0,
                     location=s.location,
                 ))
+
+        class_inherit_pattern = re.compile(r'(?:export\s+)?(?:default\s+)?class\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?(?:\s+extends\s+([A-Za-z0-9_$.]+))?(?:\s+implements\s+([A-Za-z0-9_$,\s]+))?')
+        interface_inherit_pattern = re.compile(r'(?:export\s+)?interface\s+([A-Za-z0-9_$]+)(?:<[^>]+>)?(?:\s+extends\s+([A-Za-z0-9_$,\s]+))?')
         call_pattern = re.compile(r'(?<![A-Za-z0-9_$-])\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(')
+        jsx_pattern = re.compile(r'<([A-Za-z_$][A-Za-z0-9_$]*)(?:[\s/>]|\.[A-Za-z0-9_$]+)')
         js_keywords = {
             "if", "for", "while", "switch", "catch", "function", "var", "let", "const",
             "return", "throw", "new", "typeof", "instanceof", "yield", "await", "async",
@@ -321,8 +345,9 @@ class TSLanguageAnalyzer(LanguageAnalyzer):
             "else", "try", "finally", "break", "continue", "in", "of", "void", "delete", "require"
         }
         lines = parse.source.splitlines()
-        func_syms = [s for s in symbols if s.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD, SymbolKind.CLASS)]
+        func_syms = [s for s in symbols if s.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD, SymbolKind.CLASS, SymbolKind.INTERFACE)]
         in_multiline_edges = False
+
         for idx, line in enumerate(lines, start=1):
             line_str = line.strip()
             clean_str_line = re.sub(r"'(?:\\.|[^'\\])*'", "''", line_str)
@@ -342,6 +367,54 @@ class TSLanguageAnalyzer(LanguageAnalyzer):
                     line_str = line_str.split("/*", 1)[0].strip()
             if not line_str or line_str.startswith("//") or line_str.startswith("*") or "var(" in line_str:
                 continue
+
+            for match in class_inherit_pattern.finditer(line_str):
+                cls_name = match.group(1)
+                base_name = match.group(2)
+                impl_names = match.group(3)
+                cls_sym_id = f"{file_path}::{cls_name}"
+                if base_name:
+                    target_id = import_map.get(base_name, f"{file_path}::{base_name}")
+                    edges.append(Edge(
+                        source_id=cls_sym_id,
+                        target_id=target_id,
+                        kind=EdgeKind.INHERITS,
+                        weight=1.0,
+                        confidence=1.0,
+                        location=Location(file_path, idx, line.find(base_name), idx, line.find(base_name) + len(base_name)),
+                    ))
+                if impl_names:
+                    for iface in impl_names.split(","):
+                        iface_clean = iface.strip()
+                        if iface_clean and iface_clean not in js_keywords:
+                            target_id = import_map.get(iface_clean, f"{file_path}::{iface_clean}")
+                            edges.append(Edge(
+                                source_id=cls_sym_id,
+                                target_id=target_id,
+                                kind=EdgeKind.INHERITS,
+                                weight=1.0,
+                                confidence=0.9,
+                                location=Location(file_path, idx, line.find(iface_clean), idx, line.find(iface_clean) + len(iface_clean)),
+                            ))
+
+            for match in interface_inherit_pattern.finditer(line_str):
+                iface_name = match.group(1)
+                ext_names = match.group(2)
+                iface_sym_id = f"{file_path}::{iface_name}"
+                if ext_names:
+                    for ext_target in ext_names.split(","):
+                        ext_clean = ext_target.strip()
+                        if ext_clean and ext_clean not in js_keywords:
+                            target_id = import_map.get(ext_clean, f"{file_path}::{ext_clean}")
+                            edges.append(Edge(
+                                source_id=iface_sym_id,
+                                target_id=target_id,
+                                kind=EdgeKind.INHERITS,
+                                weight=1.0,
+                                confidence=0.9,
+                                location=Location(file_path, idx, line.find(ext_clean), idx, line.find(ext_clean) + len(ext_clean)),
+                            ))
+
             enclosing = None
             for s in func_syms:
                 if s.location and s.location.start_line <= idx <= (s.location.end_line or (s.location.start_line + 50)):
@@ -351,23 +424,41 @@ class TSLanguageAnalyzer(LanguageAnalyzer):
             clean_code_line = re.sub(r'"(?:\\.|[^"\\])*"', '""', clean_code_line)
             clean_code_line = re.sub(r'`(?:\\.|[^`\\])*`', '``', clean_code_line)
             clean_code_line = re.sub(r'/(?:\\.|[^/\\])+/[gimsuy]*', '//', clean_code_line)
+
             for match in call_pattern.finditer(clean_code_line):
                 called_name = match.group(1)
                 pre_str = clean_code_line[:match.start(1)].rstrip()
                 is_member_call = pre_str.endswith(".") or pre_str.endswith("?.")
-                if called_name[0].isupper() and not pre_str.endswith("new") and not pre_str.endswith("function"):
+                if is_member_call:
                     continue
-                if called_name not in js_keywords and not is_member_call and called_name not in ("translateY", "translateX", "scale", "rotate"):
+                if called_name not in js_keywords and called_name not in ("translateY", "translateX", "scale", "rotate"):
                     col = line.find(called_name)
                     weight = float(self._count_symbol_usages(parse.source, called_name))
+                    target_id = import_map.get(called_name, f"{file_path}::{called_name}")
                     edges.append(Edge(
                         source_id=caller_id,
-                        target_id=f"{file_path}::{called_name}",
+                        target_id=target_id,
                         kind=EdgeKind.CALLS,
                         weight=weight,
                         confidence=0.75,
                         location=Location(file_path, idx, col if col >= 0 else 0, idx, col + len(called_name) if col >= 0 else len(called_name)),
                     ))
+
+            for match in jsx_pattern.finditer(clean_code_line):
+                tag_name = match.group(1)
+                if tag_name and tag_name[0].isupper() and tag_name not in js_keywords:
+                    col = line.find(tag_name)
+                    weight = float(self._count_symbol_usages(parse.source, tag_name))
+                    target_id = import_map.get(tag_name, f"{file_path}::{tag_name}")
+                    edges.append(Edge(
+                        source_id=caller_id,
+                        target_id=target_id,
+                        kind=EdgeKind.CALLS,
+                        weight=weight,
+                        confidence=0.85,
+                        location=Location(file_path, idx, col if col >= 0 else 0, idx, col + len(tag_name) if col >= 0 else len(tag_name)),
+                    ))
+
         return edges
 
     def _count_symbol_usages(self, source: str, symbol_name: str) -> int:
