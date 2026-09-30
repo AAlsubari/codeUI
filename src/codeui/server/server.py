@@ -158,85 +158,21 @@ class CodeUIHTTPRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/subgraph":
             file_id = query.get("file", [""])[0] or query.get("path", [""])[0]
-            symbol_id = query.get("symbol_id", [""])[0]
-            if not file_id and symbol_id and "::" in symbol_id:
-                file_id = symbol_id.split("::")[0]
-            if not file_id and symbol_id:
-                file_id = symbol_id
-            if "::" in file_id:
-                if not symbol_id:
-                    symbol_id = file_id
-                file_id = file_id.split("::")[0]
-            if file_id.startswith("module::"):
-                file_id = file_id[len("module::"):]
-            if not file_id:
+            symbol_id = query.get("symbol_id", [""])[0] or query.get("symbol", [""])[0]
+            target = file_id or symbol_id
+            if not target:
                 self._send_error(400, "Parameter 'file' or 'symbol_id' is required")
                 return
             try:
-                raw_symbols = self.graph.get_symbols_by_file(file_id) if self.graph else []
-                excluded_kinds = {SymbolKind.VARIABLE}
-                symbols = [s for s in raw_symbols if s.kind not in excluded_kinds]
-                cls = self.graph.get_file_classification(file_id) if self.graph else classify_file(file_id)
-                sym_ids = {s.id for s in symbols}
-                intra_edges = [
-                    e.to_dict() for e in (self.graph.get_edges() if self.graph else [])
-                    if (e.source_id in sym_ids) and (e.target_id in sym_ids)
-                ]
-                ext_outgoing = []
-                for s_id in sym_ids:
-                    for e in (self.graph.get_outgoing_edges(s_id) if self.graph else []):
-                        if e.target_id not in sym_ids:
-                            ext_outgoing.append(e.to_dict())
-                ext_incoming = []
-                for s_id in sym_ids:
-                    for e in (self.graph.get_incoming_edges(s_id) if self.graph else []):
-                        if e.source_id not in sym_ids:
-                            ext_incoming.append(e.to_dict())
-                ext_edges = ext_outgoing + ext_incoming
-                related_symbols = {}
-                for edge in ext_edges:
-                    for endpoint_id in (edge["source_id"], edge["target_id"]):
-                        if endpoint_id not in sym_ids and endpoint_id not in related_symbols:
-                            if self.graph and self.graph.has_symbol(endpoint_id):
-                                other_sym = self.graph.get_symbol(endpoint_id)
-                                other_file = other_sym.location.file_id if other_sym.location else ""
-                                other_cls = self.graph.get_file_classification(other_file) if other_file else None
-                                related_symbols[endpoint_id] = {
-                                    "id": other_sym.id,
-                                    "name": other_sym.name,
-                                    "qualified_name": other_sym.qualified_name,
-                                    "kind": str(other_sym.kind),
-                                    "file_id": other_file,
-                                    "layer": str(other_cls.layer) if other_cls else "shared",
-                                    "feature": other_cls.feature if other_cls else "external",
-                                    "is_external": True,
-                                    "location": other_sym.location.to_dict() if other_sym.location else None,
-                                    "signature": other_sym.signature,
-                                }
-                            else:
-                                raw_clean = endpoint_id.replace("module::", "")
-                                other_file = raw_clean.split("::")[0] if "::" in raw_clean else raw_clean
-                                other_name = raw_clean.split("::")[1] if "::" in raw_clean else (other_file.split("/")[-1] if "/" in other_file else other_file)
-                                other_cls = self.graph.get_file_classification(other_file) if (self.graph and other_file) else None
-                                related_symbols[endpoint_id] = {
-                                    "id": endpoint_id,
-                                    "name": other_name,
-                                    "qualified_name": endpoint_id,
-                                    "kind": "module" if endpoint_id.startswith("module::") else "symbol",
-                                    "file_id": other_file,
-                                    "layer": str(other_cls.layer) if other_cls else "shared",
-                                    "feature": other_cls.feature if other_cls else "external",
-                                    "is_external": True,
-                                    "location": {"file_id": other_file, "start_line": 1, "end_line": 1} if other_file else None,
-                                    "signature": other_name,
-                                }
-                self._send_json({
-                    "file_id": file_id,
-                    "classification": cls.to_dict(),
-                    "symbols": [s.to_dict() for s in symbols],
-                    "related_symbols": list(related_symbols.values()),
-                    "edges": intra_edges + ext_outgoing + ext_incoming,
-                })
+                if self.graph:
+                    try:
+                        data = self.graph.get_file_subgraph(target)
+                        self._send_json(data)
+                        return
+                    except Exception as err:
+                        self._send_error(404, str(err))
+                        return
+                self._send_error(404, f"Graph not loaded")
             except Exception as e:
                 self._send_error(400, str(e))
             return
@@ -247,15 +183,73 @@ class CodeUIHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/v1/file":
-            rel_path = query.get("path", [""])[0]
+            rel_path = query.get("path", [""])[0] or query.get("file", [""])[0]
+            symbol_id = query.get("symbol_id", [""])[0] or query.get("symbol", [""])[0]
+            if "::" in rel_path and not symbol_id:
+                symbol_id = rel_path
             if "::" in rel_path:
                 rel_path = rel_path.split("::")[0]
             if rel_path.startswith("module::"):
                 rel_path = rel_path[len("module::"):]
+            if symbol_id.startswith("module::"):
+                symbol_id = symbol_id[len("module::"):]
             try:
-                content = self._read_project_file(rel_path)
-                overridden_content = self.override_store.get_file_content(rel_path) if self.override_store else None
-                self._send_json({"path": rel_path, "content": overridden_content if overridden_content is not None else content})
+                target_sym = None
+                if self.graph:
+                    if symbol_id and self.graph.has_symbol(symbol_id):
+                        target_sym = self.graph.get_symbol(symbol_id)
+                    elif self.graph.has_symbol(rel_path):
+                        target_sym = self.graph.get_symbol(rel_path)
+                    elif symbol_id:
+                        sym_name = symbol_id.split("::")[-1].split(".")[-1]
+                        for s in self.graph.get_all_symbols():
+                            if s.id == symbol_id or s.name == sym_name or s.qualified_name == symbol_id or s.id.endswith("::" + sym_name):
+                                target_sym = s
+                                break
+
+                if target_sym and target_sym.location and target_sym.location.file_id:
+                    real_file = target_sym.location.file_id
+                    try:
+                        content = self._read_project_file(real_file)
+                        overridden_content = self.override_store.get_file_content(real_file) if self.override_store else None
+                        self._send_json({
+                            "path": real_file,
+                            "resolved_symbol": target_sym.id,
+                            "target_line": target_sym.location.start_line,
+                            "content": overridden_content if overridden_content is not None else content,
+                        })
+                        return
+                    except FileNotFoundError:
+                        pass
+
+                try:
+                    content = self._read_project_file(rel_path)
+                    disk_path = self._resolve_disk_path(rel_path)
+                    norm_path = rel_path
+                    if disk_path and self.project_root:
+                        try:
+                            norm_path = str(disk_path.relative_to(self.project_root.resolve())).replace("\\", "/")
+                        except Exception:
+                            pass
+                    overridden_content = self.override_store.get_file_content(norm_path) if self.override_store else None
+                    if overridden_content is None and self.override_store:
+                        overridden_content = self.override_store.get_file_content(rel_path)
+                    self._send_json({
+                        "path": norm_path,
+                        "content": overridden_content if overridden_content is not None else content,
+                        "resolved_symbol": target_sym.id if target_sym else None,
+                        "target_line": target_sym.location.start_line if (target_sym and target_sym.location) else None
+                    })
+                    return
+                except FileNotFoundError:
+                    pass
+
+                ext_content = self._synthesize_external_symbol_spec(symbol_id or rel_path)
+                self._send_json({
+                    "path": rel_path,
+                    "content": ext_content,
+                    "is_external": True,
+                })
             except Exception as e:
                 self._send_error(400, str(e))
             return
@@ -277,9 +271,10 @@ class CodeUIHTTPRequestHandler(BaseHTTPRequestHandler):
 
         if path in ("/api/v1/repo/info", "/api/v1/library/repo"):
             from codeui.core.repo import get_library_repo_url
+            import codeui
             self._send_json({
                 "repo_url": get_library_repo_url(),
-                "version": "0.1.0",
+                "version": codeui.__version__,
             })
             return
 
@@ -374,6 +369,36 @@ class CodeUIHTTPRequestHandler(BaseHTTPRequestHandler):
                 self._send_error(500, f"Rescan failed: {e}")
                 return
             self._send_json({"status": "ok", "files_count": len(self.graph.get_all_files()) if self.graph else 0})
+            return
+
+        if path == "/api/v1/api_drift/baseline":
+            if not self.graph or not self.project_root:
+                self._send_error(400, "Graph or project root not available")
+                return
+            baseline_data = {}
+            for sym in self.graph.get_all_symbols():
+                if str(sym.visibility) == "public":
+                    baseline_data[sym.id] = {
+                        "name": sym.name,
+                        "file_id": sym.location.file_id if sym.location else "",
+                        "visibility": "public",
+                        "signature": sym.signature or sym.name,
+                        "kind": str(sym.kind)
+                    }
+            dot_codeui = self.project_root / ".codeui"
+            dot_codeui.mkdir(parents=True, exist_ok=True)
+            baseline_file = dot_codeui / "api_baseline.json"
+            baseline_file.write_text(json.dumps(baseline_data, indent=2), encoding="utf-8")
+
+            from codeui.analysis.runner import AnalysisRunner
+            from codeui.analysis.base import AnalysisContext
+            ctx = AnalysisContext(self.project_root)
+            findings = AnalysisRunner().run_all(self.graph, ctx)
+            self._send_json({
+                "status": "ok",
+                "baseline_count": len(baseline_data),
+                "findings_count": len(findings)
+            })
             return
 
         if path == "/api/v1/edit":
@@ -623,6 +648,55 @@ class CodeUIHTTPRequestHandler(BaseHTTPRequestHandler):
             return full_path.read_text(encoding="utf-8", errors="replace")
         raise FileNotFoundError(f"File not found: {rel_path}")
 
+    def _synthesize_external_symbol_spec(self, symbol_name: str) -> str:
+        """Synthesize interactive documentation and usage report for external symbols."""
+        clean = symbol_name.strip()
+        parts = clean.split(".")
+        mod_name = parts[0] if parts else clean
+        base_name = parts[-1] if parts else clean
+
+        callers = []
+        if self.graph:
+            for e in self.graph.get_edges():
+                if e.target_id == clean or e.target_id.endswith("." + base_name) or e.source_id == clean:
+                    callers.append(e)
+
+        lines = [
+            f'"""',
+            f"======================================================================",
+            f"External Dependency Specification: {clean}",
+            f"Package / Module: {mod_name}",
+            f"Symbol: {base_name}",
+            f"======================================================================",
+            f"",
+            f"Usages in project ({len(callers)} reference{'s' if len(callers) != 1 else ''}):",
+        ]
+        if callers:
+            for c in callers[:50]:
+                k_val = c.kind.value if hasattr(c.kind, "value") else str(c.kind)
+                lines.append(f"  • {c.source_id} -> [{k_val}] {clean}")
+            if len(callers) > 50:
+                lines.append(f"  • ... and {len(callers) - 50} more call-sites.")
+        else:
+            lines.append("  (No direct callers recorded; referenced dynamically or via wildcard import)")
+        lines.append('"""')
+        lines.append("")
+
+        is_class = bool(base_name and base_name[0].isupper())
+        if is_class:
+            lines.append(f"class {base_name}:")
+            lines.append(f'    """Interface definition for external {clean}."""')
+            lines.append(f"    def __init__(self, *args, **kwargs):")
+            lines.append(f"        pass")
+            lines.append(f"")
+        else:
+            lines.append(f"def {base_name}(*args, **kwargs):")
+            lines.append(f'    """Interface definition for external {clean}."""')
+            lines.append(f"    pass")
+            lines.append(f"")
+
+        return "\n".join(lines)
+
     def _send_json(self, data: Dict[str, Any]) -> None:
         """Send JSON HTTP 200 response with security headers."""
         body = json.dumps(data, sort_keys=True, indent=2)
@@ -664,9 +738,6 @@ class CodeUIHTTPRequestHandler(BaseHTTPRequestHandler):
         sys.stderr.write(f"{self.address_string()} - - [{self.log_date_time_string()}] {format % args}\n")
         sys.stderr.flush()
 
-class ReusableThreadingHTTPServer(ThreadingHTTPServer):
-    allow_reuse_address = True
-
 def create_server(
     graph: Graph,
     override_store: OverrideStore,
@@ -702,4 +773,4 @@ def create_server(
         CodeUIHTTPRequestHandler.layer_rules = dict(graph._layer_rules)
     else:
         CodeUIHTTPRequestHandler.layer_rules = None
-    return ReusableThreadingHTTPServer((host, port), CodeUIHTTPRequestHandler)
+    return ThreadingHTTPServer((host, port), CodeUIHTTPRequestHandler)
