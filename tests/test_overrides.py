@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 
-#sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from codeui.core.override import Override, OverrideKind, OverrideStore
 
@@ -17,6 +17,14 @@ class TestOverrides(unittest.TestCase):
         self.assertIn("+x = 2", diff)
         store.revert("test.py")
         self.assertFalse(store.has_override("test.py"))
+
+    def test_revert_all_cleans_baselines(self):
+        store = OverrideStore()
+        store.set_file_override("test.py", "x = 1", "x = 2", author="tester")
+        store.revert_all()
+        self.assertFalse(store.has_override("test.py"))
+        self.assertEqual(store.to_diff(), "")
+        self.assertEqual(len(store._original_file_contents), 0)
 
 if __name__ == "__main__":
     unittest.main()

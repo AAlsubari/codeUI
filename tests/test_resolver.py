@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-#sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from codeui.core.resolver import ResolveContext
 
@@ -36,6 +36,22 @@ class TestResolver(unittest.TestCase):
             
             resolved_mod = ctx.resolve_path("app.py", "external_lib.secret", "python")
             self.assertEqual(resolved_mod, [])
+
+    def test_tsx_and_ts_dynamic_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "App.tsx").write_text("import { Button } from './components/Button';", encoding="utf-8")
+            (root / "src" / "components").mkdir()
+            (root / "src" / "components" / "Button.tsx").write_text("export function Button() {}", encoding="utf-8")
+            (root / "src" / "components" / "utils.ts").write_text("export function format() {}", encoding="utf-8")
+
+            ctx = ResolveContext(root)
+            res_button = ctx.resolve_path("src/App.tsx", "./components/Button", "typescript")
+            self.assertIn("src/components/Button.tsx", res_button)
+
+            res_utils = ctx.resolve_path("src/components/Button.tsx", "./utils", "typescript")
+            self.assertIn("src/components/utils.ts", res_utils)
 
 if __name__ == "__main__":
     unittest.main()

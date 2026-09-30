@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 
-#sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from codeui.agent.context import ContextBuilder, TaskSpec
 from codeui.agent.edit_tools import EditTools

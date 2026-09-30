@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-#sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from codeui.cli.main import main, scan_project
 
@@ -57,6 +57,39 @@ class TestCLI(unittest.TestCase):
                 self.assertEqual(ret, 0)
                 self.assertTrue(target.exists())
                 self.assertEqual(target.read_text(encoding="utf-8"), "print('applied')")
+            finally:
+                sys.stdout = old_stdout
+
+    def test_export_pages(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("def run():\n    return 42\n", encoding="utf-8")
+            out_dir = root / "static_dist"
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                ret = main(["pages", str(root), "--out", str(out_dir), "--json"])
+                self.assertEqual(ret, 0)
+                self.assertTrue((out_dir / "index.html").exists())
+                self.assertTrue((out_dir / "graph.json").exists())
+                self.assertTrue((out_dir / "defects.json").exists())
+                self.assertTrue((out_dir / ".nojekyll").exists())
+                self.assertTrue((out_dir / "static" / "js" / "api.js").exists())
+                index_text = (out_dir / "index.html").read_text(encoding="utf-8")
+                self.assertIn('href="static/css/styles.css"', index_text)
+            finally:
+                sys.stdout = old_stdout
+
+    def test_init_workspace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                ret = main(["init", str(root), "--json"])
+                self.assertEqual(ret, 0)
+                self.assertTrue((root / ".codeui").exists())
             finally:
                 sys.stdout = old_stdout
 

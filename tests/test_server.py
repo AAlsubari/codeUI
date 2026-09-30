@@ -6,7 +6,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-# sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from codeui.core.graph import Graph
 from codeui.core.ir import Location, Symbol, SymbolKind, Visibility
@@ -149,6 +149,42 @@ class TestServer(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+    def test_external_symbol_subgraph_and_file(self):
+        graph = Graph()
+        s1 = Symbol("app.py::main", "main", "main", SymbolKind.FUNCTION, "python", Location("app.py", 1, 0, 5, 0), None, "def main()", Visibility.PUBLIC, (), "h1")
+        from codeui.core.ir import Edge, EdgeKind
+        graph.add_symbol(s1)
+        graph.add_edge(Edge("app.py::main", "logging.StreamHandler", EdgeKind.CALLS, 1.0, 1.0, None))
+        store = OverrideStore()
+        server = create_server(graph, store, Path("."), port=0)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            # 1. Test /api/v1/subgraph for external symbol
+            subgraph_url = f"http://127.0.0.1:{port}/api/v1/subgraph?file=logging.StreamHandler"
+            with urllib.request.urlopen(subgraph_url) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode())
+                self.assertTrue(data.get("is_external"))
+                self.assertEqual(data["file_id"], "logging.StreamHandler")
+                self.assertEqual(len(data["symbols"]), 1)
+                self.assertEqual(data["symbols"][0]["name"], "StreamHandler")
+                self.assertEqual(len(data["edges"]), 1)
+
+            # 2. Test /api/v1/file for external symbol
+            file_url = f"http://127.0.0.1:{port}/api/v1/file?path=logging.StreamHandler"
+            with urllib.request.urlopen(file_url) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode())
+                self.assertTrue(data.get("is_external"))
+                self.assertIn("External Dependency Specification: logging.StreamHandler", data["content"])
+                self.assertIn("class StreamHandler", data["content"])
+                self.assertNotIn("Source code not available", data["content"])
+        finally:
+            server.shutdown()
+            server.server_close()
 
 if __name__ == "__main__":
     unittest.main()
