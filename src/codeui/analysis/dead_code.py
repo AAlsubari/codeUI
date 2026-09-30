@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import ClassVar, Iterable, List, Set
 from codeui.analysis.base import AnalysisContext, Analyzer
 from codeui.core.graph import Graph
-from codeui.core.ir import EdgeKind, Finding, Location, Severity, SymbolKind, Visibility
+from codeui.core.ir import EdgeKind, Finding, LayerKind, Location, Severity, SymbolKind, Visibility
 
 class DeadCodeAnalyzer(Analyzer):
     """Detects unused functions, unused private symbols, and orphan files.
@@ -22,7 +22,10 @@ class DeadCodeAnalyzer(Analyzer):
         "__init__", "__post_init__", "__str__", "__repr__", "__eq__", "__hash__",
         "__iter__", "__getitem__", "__setitem__", "__delitem__", "__len__",
         "__contains__", "__enter__", "__exit__", "__call__", "__await__",
-        "constructor", "init", "dispose", "render", "setup", "teardown", "setUp", "tearDown"
+        "constructor", "init", "dispose", "render", "build", "initialize",
+        "setup", "teardown", "setUp", "tearDown", "beforeEach", "afterEach",
+        "beforeAll", "afterAll", "onCreate", "onDestroy", "onStart", "onStop",
+        "onResume", "onPause", "componentDidMount", "componentWillUnmount"
     }
 
     def run(self, graph: Graph, ctx: AnalysisContext) -> Iterable[Finding]:
@@ -43,6 +46,14 @@ class DeadCodeAnalyzer(Analyzer):
                 referenced_targets.add(raw_target.split(".")[-1])
 
         for sym in graph.get_all_symbols():
+            if sym.location and sym.location.file_id:
+                cls = graph.get_file_classification(sym.location.file_id)
+                if cls.layer in (LayerKind.TEST, LayerKind.CONFIG):
+                    continue
+                file_lower = sym.location.file_id.replace("\\", "/").lower()
+                if any(p in file_lower for p in ("/tests/", "/test/", "/benches/", "/bench/", "/examples/", "/example/", "/fixtures/")):
+                    continue
+
             if sym.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD, SymbolKind.CLASS):
                 if sym.name in self.ENTRY_POINTS or any(sym.name.startswith(p) for p in self.ENTRY_POINTS):
                     continue

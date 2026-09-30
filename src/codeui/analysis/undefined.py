@@ -76,10 +76,80 @@ class UndefinedSymbolAnalyzer(Analyzer):
                 if "." in target_name:
                     continue
 
+                local_names = set()
+                try:
+                    caller_sym = graph.get_symbol(edge.source_id)
+                    if caller_sym and caller_sym.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+                        file_path = ctx.root_dir / caller_sym.location.file_id
+                        if file_path.exists():
+                            import ast
+                            source = file_path.read_text(encoding="utf-8")
+                            tree = ast.parse(source)
+                            for node in ast.walk(tree):
+                                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno == caller_sym.location.start_line:
+                                    for arg in getattr(node.args, "posonlyargs", []) + getattr(node.args, "args", []) + getattr(node.args, "kwonlyargs", []):
+                                        if hasattr(arg, "arg"):
+                                            local_names.add(arg.arg)
+                                    if getattr(node.args, "vararg", None):
+                                        local_names.add(node.args.vararg.arg)
+                                    if getattr(node.args, "kwarg", None):
+                                        local_names.add(node.args.kwarg.arg)
+                                    
+                                    for subnode in ast.walk(node):
+                                        if isinstance(subnode, ast.Assign):
+                                            for target in subnode.targets:
+                                                if isinstance(target, ast.Name):
+                                                    local_names.add(target.id)
+                                                elif isinstance(target, (ast.Tuple, ast.List)):
+                                                    def _ext_names(t):
+                                                        res = set()
+                                                        if isinstance(t, ast.Name): res.add(t.id)
+                                                        elif isinstance(t, (ast.Tuple, ast.List)):
+                                                            for e in t.elts: res.update(_ext_names(e))
+                                                        return res
+                                                    local_names.update(_ext_names(target))
+                                        elif isinstance(subnode, ast.AnnAssign):
+                                            if isinstance(subnode.target, ast.Name):
+                                                local_names.add(subnode.target.id)
+                                        elif isinstance(subnode, (ast.For, ast.AsyncFor)):
+                                            def _ext_names(t):
+                                                res = set()
+                                                if isinstance(t, ast.Name): res.add(t.id)
+                                                elif isinstance(t, (ast.Tuple, ast.List)):
+                                                    for e in t.elts: res.update(_ext_names(e))
+                                                return res
+                                            local_names.update(_ext_names(subnode.target))
+                                        elif isinstance(subnode, (ast.With, ast.AsyncWith)):
+                                            for item in subnode.items:
+                                                if item.optional_vars:
+                                                    def _ext_names(t):
+                                                        res = set()
+                                                        if isinstance(t, ast.Name): res.add(t.id)
+                                                        elif isinstance(t, (ast.Tuple, ast.List)):
+                                                            for e in t.elts: res.update(_ext_names(e))
+                                                        return res
+                                                    local_names.update(_ext_names(item.optional_vars))
+                                        elif isinstance(subnode, ast.ExceptHandler):
+                                            if subnode.name:
+                                                local_names.add(subnode.name)
+                                        elif isinstance(subnode, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                                            for gen in subnode.generators:
+                                                def _ext_names(t):
+                                                    res = set()
+                                                    if isinstance(t, ast.Name): res.add(t.id)
+                                                    elif isinstance(t, (ast.Tuple, ast.List)):
+                                                        for e in t.elts: res.update(_ext_names(e))
+                                                    return res
+                                                local_names.update(_ext_names(gen.target))
+                                    break
+                except Exception:
+                    pass
+
                 if (
                     not graph.has_symbol(target_id)
                     and target_name not in all_symbol_names
                     and target_name not in file_imports.get(src_file, set())
+                    and target_name not in local_names
                     and not target_name.startswith("_")
                 ):
                     loc = edge.location or Location(edge.source_id, 1, 0, 1, 0)

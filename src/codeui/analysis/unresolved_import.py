@@ -58,8 +58,20 @@ class UnresolvedImportAnalyzer(Analyzer):
                     known_deps.add(stem)
                     known_deps.add(p)
 
+        top_level_items = set()
         if ctx and ctx.root_dir:
             root = ctx.root_dir
+            try:
+                for item in root.iterdir():
+                    top_level_items.add(item.name)
+                    top_level_items.add(item.stem)
+                    if item.name == "src" and item.is_dir():
+                        for subitem in item.iterdir():
+                            top_level_items.add(subitem.name)
+                            top_level_items.add(subitem.stem)
+            except Exception:
+                pass
+
             for manifest_name in ("package.json", "requirements.txt", "pyproject.toml", "setup.py", "Pipfile", "go.mod", "Cargo.toml"):
                 mpath = root / manifest_name
                 if mpath.exists():
@@ -104,17 +116,35 @@ class UnresolvedImportAnalyzer(Analyzer):
                     or any(raw_mod in f or base_mod in f for f in all_files)
                 )
 
+                is_internal = False
+                if base_mod in top_level_items:
+                    is_internal = True
+                else:
+                    for f in all_files:
+                        f_clean = f.replace("\\", "/")
+                        if f_clean.startswith(base_mod + "/") or f_clean == base_mod or ("/" + base_mod + "/") in f_clean:
+                            is_internal = True
+                            break
+                
+                if not is_internal and base_mod != "@" and base_mod != "":
+                    is_known = True
+
                 if not is_known and raw_mod.startswith("@/"):
                     as_src = "src/" + raw_mod[2:]
                     as_root = raw_mod[2:]
                     if any(as_src in f or as_root in f for f in all_files):
                         is_known = True
 
-                if not is_known and hasattr(ctx, "resolve_path"):
+                if not is_known:
                     src_file = edge.source_id.split("::")[0]
-                    resolved = ctx.resolve_path(src_file, raw_mod)
-                    if resolved:
-                        is_known = True
+                    if hasattr(ctx, "resolve_path"):
+                        resolved = ctx.resolve_path(src_file, raw_mod)
+                        if resolved:
+                            is_known = True
+                    elif hasattr(ctx, "resolve_context") and ctx.resolve_context and hasattr(ctx.resolve_context, "resolve_path"):
+                        resolved = ctx.resolve_context.resolve_path(src_file, raw_mod)
+                        if resolved:
+                            is_known = True
 
                 if not is_known and hasattr(ctx, "alias_mappings"):
                     for alias, target in getattr(ctx, "alias_mappings", {}).items():
