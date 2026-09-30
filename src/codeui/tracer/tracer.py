@@ -1,147 +1,138 @@
-"""Logic and call-chain tracer across files and languages."""
-import fnmatch
-from collections import deque
-from pathlib import Path
-from typing import Generator, Iterable, List, Set, Tuple
+"""Logic, dependency, and call-graph path tracing."""
+from typing import Dict, Iterable, List, Set
 from codeui.core.graph import Graph
-from codeui.core.ir import Edge, EdgeKind, Symbol, SymbolKind
-from codeui.errors import SymbolNotFoundError
+from codeui.core.ir import Edge, EdgeKind, LayerKind, Location, Symbol, SymbolKind, Visibility
 
 class Tracer:
-    """Graph logic tracer yielding call chains, data flow, and entry points.
+    """Traces forward and backward execution paths and symbol call chains.
     Example:
-        >>> g = Graph()
-        >>> tracer = Tracer(g)
-        >>> list(tracer.entry_points())
+        >>> t = Tracer(Graph())
+        >>> list(t.forward("missing"))
         []
     """
+    TRACER_EDGE_KINDS = (
+        EdgeKind.CALLS,
+        EdgeKind.READS,
+        EdgeKind.WRITES,
+        EdgeKind.REFERENCES,
+        EdgeKind.INSTANTIATES,
+        EdgeKind.INHERITS,
+        EdgeKind.IMPLEMENTS,
+        EdgeKind.OVERRIDES,
+        EdgeKind.DEPENDS_ON,
+    )
+
     def __init__(self, graph: Graph) -> None:
         self.graph = graph
 
-    def forward(self, symbol_id: str, depth: int | None = None) -> Generator[Symbol, None, None]:
-        """Follow symbol usage forward (who uses or calls this symbol?).
+    def forward(self, symbol_id: str, depth: int = 5) -> Iterable[Symbol]:
+        """Trace forward callers or dependents targeting the specified symbol.
         Example:
-            >>> g = Graph()
-            >>> tracer = Tracer(g)
-            >>> list(tracer.forward("nonexistent", 1))
+            >>> t = Tracer(Graph())
+            >>> list(t.forward("s"))
             []
         """
-        if not self.graph.has_symbol(symbol_id):
-            return
         visited: Set[str] = {symbol_id}
-        queue: deque[Tuple[str, int]] = deque([(symbol_id, 0)])
-        while queue:
-            curr_id, curr_depth = queue.popleft()
-            if depth is not None and curr_depth >= depth:
-                continue
-            incoming = self.graph.get_incoming_edges(curr_id)
-            for edge in incoming:
-                src_id = edge.source_id
-                if src_id not in visited and self.graph.has_symbol(src_id):
-                    visited.add(src_id)
-                    queue.append((src_id, curr_depth + 1))
-                    yield self.graph.get_symbol(src_id)
+        queue: List[str] = [symbol_id]
+        current_depth = 0
 
-    def backward(self, symbol_id: str, depth: int | None = None) -> Generator[Symbol, None, None]:
-        """Follow symbol dependencies backward (what does this symbol depend on?).
+        while queue and current_depth < depth:
+            next_queue: List[str] = []
+            for curr in queue:
+                for edge in self.graph.get_incoming_edges(curr):
+                    if edge.kind in self.TRACER_EDGE_KINDS:
+                        src = edge.source_id
+                        if src not in visited:
+                            visited.add(src)
+                            if self.graph.has_symbol(src):
+                                sym = self.graph.get_symbol(src)
+                                yield sym
+                                next_queue.append(src)
+            queue = next_queue
+            current_depth += 1
+
+    def backward(self, symbol_id: str, depth: int = 5) -> Iterable[Symbol]:
+        """Trace backward downstream dependencies and callees invoked by symbol.
         Example:
-            >>> g = Graph()
-            >>> tracer = Tracer(g)
-            >>> list(tracer.backward("nonexistent", 1))
+            >>> t = Tracer(Graph())
+            >>> list(t.backward("s"))
             []
         """
-        if not self.graph.has_symbol(symbol_id):
-            return
         visited: Set[str] = {symbol_id}
-        queue: deque[Tuple[str, int]] = deque([(symbol_id, 0)])
-        while queue:
-            curr_id, curr_depth = queue.popleft()
-            if depth is not None and curr_depth >= depth:
-                continue
-            outgoing = self.graph.get_outgoing_edges(curr_id)
-            for edge in outgoing:
-                tgt_id = edge.target_id
-                if tgt_id not in visited and self.graph.has_symbol(tgt_id):
-                    visited.add(tgt_id)
-                    queue.append((tgt_id, curr_depth + 1))
-                    yield self.graph.get_symbol(tgt_id)
+        queue: List[str] = [symbol_id]
+        current_depth = 0
 
-    def paths(self, from_id: str, to_id: str, max_paths: int = 5) -> Generator[List[Symbol], None, None]:
-        """Find shortest call or reference paths between two symbols.
+        while queue and current_depth < depth:
+            next_queue: List[str] = []
+            for curr in queue:
+                for edge in self.graph.get_outgoing_edges(curr):
+                    if edge.kind in self.TRACER_EDGE_KINDS:
+                        tgt = edge.target_id
+                        if tgt not in visited:
+                            visited.add(tgt)
+                            if self.graph.has_symbol(tgt):
+                                sym = self.graph.get_symbol(tgt)
+                                yield sym
+                                next_queue.append(tgt)
+            queue = next_queue
+            current_depth += 1
+
+    def entry_points(self) -> Iterable[Symbol]:
+        """Yield symbols that act as project entry points based on file classification or explicit entries.
         Example:
-            >>> g = Graph()
-            >>> tracer = Tracer(g)
-            >>> list(tracer.paths("a", "b", 5))
+            >>> t = Tracer(Graph())
+            >>> list(t.entry_points())
             []
         """
-        if not self.graph.has_symbol(from_id) or not self.graph.has_symbol(to_id):
+        explicit = getattr(self.graph, "_entry_points", [])
+        if explicit:
+            clean_entries = [e.replace("\\", "/").strip().lstrip("./") for e in explicit]
+            for s in self.graph.get_all_symbols():
+                if s.location and s.location.file_id:
+                    clean_f = s.location.file_id.replace("\\", "/").strip().lstrip("./")
+                    if clean_f in clean_entries:
+                        yield s
             return
-        paths_found = 0
-        queue: deque[List[str]] = deque([[from_id]])
-        visited: Set[Tuple[str, ...]] = set()
-        while queue and paths_found < max_paths:
-            path = queue.popleft()
-            last_node = path[-1]
-            if last_node == to_id:
-                paths_found += 1
-                yield [self.graph.get_symbol(nid) for nid in path]
+
+        for s in self.graph.get_all_symbols():
+            if s.location and s.location.file_id:
+                cls = self.graph.get_file_classification(s.location.file_id)
+                if cls.layer == LayerKind.ENTRY:
+                    yield s
+
+    def find_path(self, source_id: str, target_id: str, max_depth: int = 15) -> List[str]:
+        """Find the shortest directed dependency or call path between two nodes.
+        Example:
+            >>> g = Graph()
+            >>> loc = Location("a.py", 1, 0, 1, 0)
+            >>> g.add_symbol(Symbol("s1", "f1", "a.f1", SymbolKind.FUNCTION, "py", loc, None, None, Visibility.PUBLIC, (), "h1"))
+            >>> g.add_symbol(Symbol("s2", "f2", "a.f2", SymbolKind.FUNCTION, "py", loc, None, None, Visibility.PUBLIC, (), "h2"))
+            >>> g.add_edge(Edge("s1", "s2", EdgeKind.CALLS, 1.0, 1.0, loc))
+            >>> t = Tracer(g)
+            >>> t.find_path("s1", "s2")
+            ['s1', 's2']
+        """
+        if not source_id or not target_id:
+            return []
+        if source_id == target_id:
+            return [source_id]
+
+        queue: List[List[str]] = [[source_id]]
+        visited: Set[str] = {source_id}
+
+        while queue:
+            path = queue.pop(0)
+            if len(path) > max_depth:
                 continue
-            for edge in self.graph.get_outgoing_edges(last_node):
+            curr = path[-1]
+            for edge in self.graph.get_outgoing_edges(curr):
+                if edge.kind == EdgeKind.CONTAINS:
+                    continue
                 nxt = edge.target_id
-                if nxt not in path and self.graph.has_symbol(nxt):
-                    new_path = path + [nxt]
-                    path_tuple = tuple(new_path)
-                    if path_tuple not in visited:
-                        visited.add(path_tuple)
-                        queue.append(new_path)
+                if nxt == target_id:
+                    return path + [nxt]
+                if nxt not in visited:
+                    visited.add(nxt)
+                    queue.append(path + [nxt])
 
-    def data_flow(self, symbol_id: str) -> Generator[Tuple[Symbol, str], None, None]:
-        """Trace definition-use data flow chains for a variable or parameter.
-        Example:
-            >>> g = Graph()
-            >>> tracer = Tracer(g)
-            >>> list(tracer.data_flow("s1"))
-            []
-        """
-        if not self.graph.has_symbol(symbol_id):
-            return
-        for edge in self.graph.get_outgoing_edges(symbol_id):
-            if edge.kind in (EdgeKind.READS, EdgeKind.WRITES, EdgeKind.RETURNS):
-                if self.graph.has_symbol(edge.target_id):
-                    yield (self.graph.get_symbol(edge.target_id), str(edge.kind))
-
-    def entry_points(self) -> Generator[Symbol, None, None]:
-        """Discover project entry point symbols across languages with user entry precedence.
-        Example:
-            >>> from codeui.core.ir import Location, Symbol, SymbolKind, Visibility
-            >>> g = Graph()
-            >>> g.set_entry_points(["custom_script.py"])
-            >>> loc = Location("custom_script.py", 1, 0, 2, 0)
-            >>> g.add_symbol(Symbol("custom_script.py::run", "run", "custom_script.run", SymbolKind.FUNCTION, "python", loc, None, "def run():", Visibility.PUBLIC, (), "h"))
-            >>> tracer = Tracer(g)
-            >>> [s.name for s in tracer.entry_points()]
-            ['run']
-        """
-        if getattr(self.graph, "_entry_points", None):
-            user_entries = [str(ep).replace("\\", "/").lstrip("./") for ep in self.graph._entry_points]
-            yielded_ids = set()
-            for sym in self.graph.get_all_symbols():
-                f_id = (sym.location.file_id if sym.location else sym.id).replace("\\", "/").lstrip("./")
-                is_match = False
-                for ep in user_entries:
-                    ep_sub = ep.split("/", 1)[1] if "/" in ep else ep
-                    if f_id == ep or f_id == ep_sub or (any(c in ep for c in "*?[") and fnmatch.fnmatch(f_id, ep)):
-                        is_match = True
-                        break
-                if is_match and sym.id not in yielded_ids:
-                    yielded_ids.add(sym.id)
-                    yield sym
-            if yielded_ids:
-                return
-
-        entry_names = {"main", "index", "App", "app", "run", "handler", "cli", "start", "init", "__main__"}
-        for sym in self.graph.get_all_symbols():
-            if sym.kind in (SymbolKind.FUNCTION, SymbolKind.FILE) and not sym.name.startswith("test_") and (
-                sym.name in entry_names or any(sym.name.startswith(p) for p in ("start_", "run_", "main_")) or sym.id.endswith("main.py") or sym.id.endswith("main.go") or sym.id.endswith("main.rs") or sym.id.endswith("index.ts") or sym.id.endswith("index.js")
-            ):
-                yield sym
+        return []

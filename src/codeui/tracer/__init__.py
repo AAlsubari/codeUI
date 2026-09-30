@@ -1,1 +1,4 @@
-"""Call-chain and logic tracing package for codeui."""
+"""Execution tracer and path analyzer for codeui."""
+from codeui.tracer.tracer import Tracer
+
+__all__ = ["Tracer"]
